@@ -1,89 +1,76 @@
-# Document Agent — Stage 1: Context Parser & Execution Planner
+# Document Agent — Stage 2: Generic Ingestion & Local Retrieval
 
-This stage produces a **reviewable execution plan**, not generated documents.
-It is domain-independent. ASPICE is an example project, not a hard-coded engine dependency.
+A local-first, context-driven documentation project. **Stage 1** generates and approves a task plan from `context.md` (without reading documents). **Stage 2** extracts documents from `inputs/` and `references/`, creates a local SQLite FTS5 search index, and returns source-linked search results. There are no document-generating agents yet.
 
-## Requirements
+No cloud service, network connection, Ollama or LangGraph is required for Stage 2. Optional local Ollama planning from Stage 1 is preserved. Ollama is a separate system program; it does not need to be installed inside your `.venv`.
 
-- Python 3.10+ (standard library only)
-- Optional: Ollama installed locally with a model such as `qwen2.5:7b`
+## Installation (Ubuntu)
 
-## Quick start (no installs, no LLM required)
-
-From the repository directory:
+Requires Python 3.10+ (Ubuntu 24.04 works).
 
 ```bash
-python3 main.py --project projects/aspice
+cd document-agent-stage2
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+```
+
+## Quick start
+
+```bash
+# Stage 1: plan and approve (no documents read)
+python main.py --project projects/aspice
 cat projects/aspice/reviews/plan.md
-python3 main.py --project projects/aspice --status
-python3 main.py --project projects/aspice --approve
-python3 main.py --project projects/aspice --status
+python main.py --project projects/aspice --approve
+
+# Add your own local documents under inputs/ and references/.
+# Or use illustrative sample documents to test:
+cp samples/example_swe1.md projects/aspice/inputs/
+cp samples/example_reference.md projects/aspice/references/
+
+# Stage 2: extract, index, inspect and search locally
+python main.py --project projects/aspice --ingest
+python main.py --project projects/aspice --list-docs
+python main.py --project projects/aspice --search "requirements review"
+python main.py --project projects/aspice --search "accountable roles" --role references
 ```
 
-Try a **second independent project**:
+Outputs: `projects/aspice/.local/documents.sqlite3` (search index) and `.local/ingestion_report.json` (warnings/errors). Each search result contains the source role, relative document path, location (page, paragraph, slide, sheet row or line range), text excerpt, and ranking score. Run `--ingest` again after adding/editing/removing documents; unchanged documents are skipped and removed files are purged.
 
-```bash
-python3 main.py --project projects/architecture
-cat projects/architecture/reviews/plan.md
-```
+## Supported formats
 
-To reject and explain a required change:
+- `.md`, `.markdown`, `.txt`, `.rst`: line-ranged text blocks
+- `.pdf`: searchable text by page (PyMuPDF); image-only scans need later OCR support
+- `.docx`: paragraph/table rows (python-docx)
+- `.html`, `.htm`: visible text blocks (HTMLParser; scripts/styles ignored)
+- `.csv`: row-by-row text (Python CSV)
+- `.xlsx`: row text and sheet coordinates (openpyxl)
+- `.pptx`: slide text and table rows (python-pptx)
 
-```bash
-python3 main.py --project projects/aspice --reject --comment "Revise the expected deliverables"
-```
+For rich formats, this is **text extraction**, not perfect semantic document understanding: formulas, images, embedded diagrams, slide relationships, DOCX headers and footers are not interpreted. Location labels reflect the parser's view, not canonical citations. Unsupported files, oversized files (>25 MiB), and PDFs without extractable text produce errors. Source errors do not become empty evidence of noncompliance.
 
-Revise the project's `context.md`, run `python3 main.py --project ...` again, review the newly generated plan, and approve it.
-Changing `context.md` invalidates prior approval. Editing `plan.json` also invalidates its hash. Editing `plan.md` does not change the executable plan; revise `context.md` instead.
+## Stage 2 architecture
 
-## Optional local LLM planning
+- `engine/extractors.py`: format parsers, each yielding `{text, locator, kind}` blocks, with bounded chunking.
+- `engine/ingest.py`: traverses only project `inputs/` and `references/`, hashes local files, extracts, increments index, records ingestion report.
+- `engine/store.py`: project-local SQLite catalog with FTS5 indexing, metadata and source-located keyword retrieval.
+- `main.py`: shared Stage 1 planner/review commands and Stage 2 ingestion/search commands.
 
-To let a local model choose among the **same safe, registered task capabilities**:
+## Safety and privacy
 
-```bash
-ollama pull qwen2.5:7b
-# Ensure Ollama is serving locally on port 11434.
-python3 main.py --project projects/aspice --planner ollama --model qwen2.5:7b
-```
+- All data stays in project-local files. Stage 2 has **no LLM calls and no network I/O**.
+- `context.md` and file contents are **not executable instructions**. Parsing will never invoke shell commands or follow symlinks in input directories.
+- Ingestion requires approval of the exact current Stage 1 plan. A changed `context.md` invalidates approval.
+- `inputs/`, `references/`, `.local/`, review files, and generated output files should not be Git committed by default; verify `.gitignore` rules before pushing.
+- Source-file hashes and source locations are preserved in the database. For the MVP, the original source files themselves are not copied into a separate immutable archive; treat them as the authority.
+- Local Ollama can optionally interpret Stage 1 context only: `ollama pull qwen2.5:1.5b`, then `python main.py --project projects/aspice --planner ollama --model qwen2.5:1.5b`. No automatic external API fallback is implemented.
 
-No remote endpoint is configurable or supported. The Ollama integration uses `http://127.0.0.1:11434/api/generate`. Ollama uses the structured JSON `format` capability documented in its official API. If the local service is unavailable, the command **fails closed**: it does not silently call another provider. Ollama mode is not tested end-to-end in the included environment.
+## Next stage
 
-## Project convention
-
-```text
-projects/<project>/
-    context.md             # editable natural-language goals and constraints
-    inputs/                # existing documents (not read until Stage 2)
-    references/            # authoritative sources (not read until Stage 2)
-    templates/             # optional document formats (not read until Stage 2)
-    reviews/
-        plan.json          # validated, dependency-ordered draft tasks
-        plan.md            # readable plan for review
-        decision.json      # approval/rejection for the exact plan/context
-    outputs/               # not written at Stage 1
-```
-
-## How it works
-
-1. `engine/context.py` reads `context.md`, preserving sections and a SHA-256 fingerprint.
-2. `engine/catalog.py` provides generic capabilities and a deterministic planner baseline.
-3. Optionally, `engine/ollama.py` proposes capability IDs using a **local** model.
-4. `engine/planner.py` enforces supported operations, dependencies, quality criteria, and a draft-only state.
-5. `engine/review.py` persists the JSON and Markdown plans and records explicit human approval.
-
-There is **no LangGraph task execution yet**. LangGraph comes when tasks become executable in later stages. Stage 1 produces the validated task specification consumed by that future runtime. No arbitrary Python, shell commands, or file operation instructions from `context.md` are executed.
-
-## Limitations
-
-- The deterministic planner relies on simple keywords; free-form objectives benefit from local Ollama.
-- This prototype recognizes headings such as Objective, Scope, Tasks, Outputs, Quality Criteria and Constraints; unknown sections remain preserved but are not all semantically interpreted by the rule-based planner.
-- The structured plan validates capability IDs and task dependencies, not whether the objective is technically achievable.
-- The first stage does not parse PDF/DOCX, index sources, run agents, or generate documents.
-- No external LLM API fallback exists yet. A future explicit-approval adapter must display the exact model, destination, and text payload before transmission.
-- Input files and review records are ignored by Git by default; verify any corporate repository and backup policies separately.
+Stage 3 will connect the indexed evidence to reusable analysis and generation capabilities, adding grounded claims, citations, and model-assisted processing with human review. A deterministic coverage engine remains separate from any model judgment.
 
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests -v
+python -m unittest discover -s tests -v
 ```

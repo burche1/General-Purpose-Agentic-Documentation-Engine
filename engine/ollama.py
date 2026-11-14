@@ -20,8 +20,11 @@ class LocalPlannerError(RuntimeError):
     pass
 
 
-def select_with_ollama(context: str, model: str = "qwen2.5:7b") -> tuple[list[str], list[str]]:
+def select_with_ollama(context: str, model: str = "qwen2.5:1.5b") -> tuple[list[str], list[str]]:
     """Return proposed capability IDs and notes; Python validates the response."""
+    # Local Ollama can proxy cloud models. Refuse them in this no-fallback MVP.
+    if model.casefold().endswith(":cloud"):
+        raise LocalPlannerError("Cloud-backed Ollama models are disabled without explicit approval")
     ids = [item.id for item in CATALOG]
     schema = {
         "type": "object",

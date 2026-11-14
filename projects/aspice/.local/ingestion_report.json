@@ -1,0 +1,18 @@
+{
+  "indexed": [
+    {
+      "path": "inputs/example_swe1.md",
+      "chunks": 4
+    },
+    {
+      "path": "references/example_reference.md",
+      "chunks": 3
+    }
+  ],
+  "unchanged": [],
+  "removed": [],
+  "errors": [],
+  "empty": [],
+  "completed_at_utc": "2026-11-14T16:02:53.735850+00:00",
+  "document_count": 2
+}
