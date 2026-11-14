@@ -59,7 +59,7 @@ Analyze our existing software development processes and draft improved process d
 
 ## Limitations and warnings
 
-- Stage 1 creates and reviews a plan only; document processing is not implemented yet.
+- Planning only proposes tasks; use --ingest and --run for local document processing.
 - External LLM calls are not implemented. Ollama mode uses local loopback only.
 
 ## Approval

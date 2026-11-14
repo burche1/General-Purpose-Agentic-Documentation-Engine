@@ -1,7 +1,7 @@
 Metadata-Version: 2.4
 Name: document-agent
-Version: 0.3.0
-Summary: Local-first context-driven document planning, retrieval and drafting
+Version: 0.4.0
+Summary: Local-first context-driven document planning, retrieval, drafting and review
 Requires-Python: >=3.10
 Requires-Dist: PyMuPDF<2,>=1.24
 Requires-Dist: python-docx<2,>=1.1

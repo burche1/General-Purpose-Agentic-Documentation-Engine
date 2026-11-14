@@ -9,7 +9,8 @@ import sys
 from engine.context import parse_context
 from engine.ingest import ingest_project, run_stage3
 from engine.planner import plan_project
-from engine.review import get_status, record_decision, save_draft
+from engine.review import (get_status, record_decision, save_draft, review_generated_draft,
+                           decide_generated_draft, publish_generated_draft)
 from engine.store import inventory, search
 
 
@@ -24,9 +25,17 @@ def main(argv: list[str] | None = None) -> int:
     action.add_argument("--list-docs", action="store_true", help="List indexed documents")
     action.add_argument("--search", metavar="TEXT", help="Search indexed content")
     action.add_argument("--check", action="store_true", help="Check if approved plan and indexed evidence are ready for Stage 3")
-    action.add_argument("--run", action="store_true", help="Generate Stage 3 review drafts locally")
-    parser.add_argument("--llm", choices=["none", "ollama"], default="none",
-                        help="Stage 3 inference; none is local deterministic mode")
+    action.add_argument("--run", action="store_true", help="Generate a local draft")
+    action.add_argument("--preview-api", action="store_true", help="Save exact OpenAI request locally for approval; does not call API")
+    action.add_argument("--approve-api", metavar="REQUEST_SHA256", help="Approve one exact previewed API payload and model")
+    action.add_argument("--review-draft", action="store_true", help="Validate a generated draft and report limitations")
+    action.add_argument("--approve-draft", action="store_true", help="Human-approve the specified generated draft")
+    action.add_argument("--reject-draft", action="store_true", help="Reject a generated draft with a comment")
+    action.add_argument("--publish-draft", action="store_true", help="Copy an approved draft into local approved outputs")
+    parser.add_argument("--llm", choices=["none", "ollama", "openai"], default="ollama",
+                        help="Inference backend; local Ollama is default. OpenAI requires exact payload approval")
+    parser.add_argument("--draft-id", help="Generated run folder name to review/approve/publish (defaults to latest)")
+    parser.add_argument("--allow-partial", action="store_true", help="Explicitly acknowledge incomplete source selection on approval")
     parser.add_argument("--max-evidence", type=int, default=40,
                         help="Maximum source chunks used for Stage 3 (4–200)")
     parser.add_argument("--role", choices=["all", "inputs", "references"], default="all")
@@ -34,7 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--match-all", action="store_true", help="Require all search terms")
     parser.add_argument("--comment", default="", help="Review comment")
     parser.add_argument("--planner", choices=["rules", "ollama"], default="rules")
-    parser.add_argument("--model", default="qwen2.5:1.5b", help="Local Ollama model for optional planning")
+    parser.add_argument("--model", default=None, help="Ollama model (default qwen2.5:1.5b); OpenAI: gpt-mini/gpt-pro aliases or full ID")
     args = parser.parse_args(argv)
     try:
         ctx = parse_context(args.project)
@@ -52,9 +61,25 @@ def main(argv: list[str] | None = None) -> int:
             result = ingest_project(ctx.project_dir)
             print(json.dumps(result, indent=2, ensure_ascii=False))
             return 1 if result["errors"] else 0
-        if args.run or args.check:
-            result = run_stage3(ctx.project_dir, llm=args.llm, model=args.model,
-                                max_evidence=args.max_evidence, dry_run=args.check)
+        if args.review_draft:
+            result = review_generated_draft(ctx.project_dir, args.draft_id)
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0 if not result["blockers"] else 1
+        if args.approve_draft or args.reject_draft:
+            result = decide_generated_draft(ctx.project_dir, args.draft_id,
+                                            approved=args.approve_draft,
+                                            comment=args.comment, allow_partial=args.allow_partial)
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0
+        if args.publish_draft:
+            result = publish_generated_draft(ctx.project_dir, args.draft_id)
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0
+        if args.run or args.check or args.preview_api or args.approve_api:
+            result = run_stage3(ctx.project_dir, llm=args.llm,
+                                model=args.model or ("qwen2.5:1.5b" if args.llm != "openai" else "gpt-5.4-mini"),
+                                max_evidence=args.max_evidence, dry_run=args.check,
+                                preview_api=args.preview_api, approve_api=args.approve_api)
             print(json.dumps(result, indent=2, ensure_ascii=False))
             return 0
         if args.list_docs:
@@ -65,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
                                     limit=args.limit, match_all=args.match_all),
                              indent=2, ensure_ascii=False))
             return 0
-        plan = plan_project(ctx, planner=args.planner, model=args.model)
+        plan = plan_project(ctx, planner=args.planner, model=args.model or "qwen2.5:1.5b")
         json_path, md_path = save_draft(ctx, plan)
         print(f"Project: {ctx.title}")
         print(f"Planner: {args.planner} | Proposed tasks: {len(plan['tasks'])}")
