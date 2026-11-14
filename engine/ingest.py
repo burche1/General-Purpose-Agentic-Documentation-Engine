@@ -82,3 +82,166 @@ def ingest_project(project_dir: Path) -> dict:
         raise ValueError('Refusing to overwrite symlinked report')
     path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
     return report
+
+
+# Stage 3: approved-plan document analysis and draft generation
+from datetime import datetime, timezone
+from hashlib import sha256
+from pathlib import Path
+from uuid import uuid4
+import json
+import re
+
+from .context import ProjectContext, parse_context
+from .review import get_status, read_draft
+from .store import inventory
+from .catalog import analyze, compare, consolidate, draft, gaps, design_outline
+from .store import Evidence, select_evidence, check_fresh_index
+from .ollama import interpret_locally
+
+
+class Stage3Error(ValueError):
+    pass
+
+
+def _validated_project(path: Path) -> tuple[ProjectContext, dict, set[str]]:
+    ctx = parse_context(path)
+    status = get_status(ctx)
+    if status != 'approved':
+        raise Stage3Error(f'Current Stage 1 plan is not approved ({status}). Run main.py --project ... then --approve.')
+    plan = read_draft(ctx)
+    capabilities = {task['capability'] for task in plan['tasks']}
+    return ctx, plan, capabilities
+
+
+def _json(obj) -> str:
+    return json.dumps(obj, indent=2, ensure_ascii=False) + '\n'
+
+
+def _render_llm_findings(findings: list[dict]) -> str:
+    lines = ['# Model-proposed observations', '',
+             '> Every observation requires human review; citation presence does not establish factual correctness.', '']
+    if not findings:
+        lines.append('The local model returned no observations.\n')
+    for item in findings:
+        lines.append(f"- **{item['kind']}**: {item['text']} " +
+                     ' '.join('[' + e + ']' for e in item['evidence_ids']))
+    return '\n'.join(lines).rstrip() + '\n'
+
+
+def _checked_references(files: dict[str, str], allowed: set[str]) -> dict:
+    """Syntactic citation validator; semantic validation is deferred to Stage 4."""
+    errors = []
+    cited = set()
+    for name, content in files.items():
+        for identifier in re.findall(r'\[(E\d{4})\]', content):
+            cited.add(identifier)
+            if identifier not in allowed:
+                errors.append(f'{name}: unknown citation [{identifier}]')
+    return {
+        'passed': not errors,
+        'citation_ids_used': sorted(cited),
+        'errors': errors,
+        'warning': 'Citation integrity is syntactic only; source entailment is not automatically proven.',
+        'status': 'draft_for_human_review',
+    }
+
+
+def _safe_output_base(ctx: ProjectContext) -> Path:
+    root = ctx.project_dir / 'outputs'
+    if root.is_symlink() or (root.exists() and not root.is_dir()):
+        raise Stage3Error('outputs/ must be an ordinary directory')
+    sub = root / 'stage3'
+    if sub.is_symlink() or (sub.exists() and not sub.is_dir()):
+        raise Stage3Error('outputs/stage3/ must be an ordinary directory')
+    root.mkdir(exist_ok=True)
+    sub.mkdir(exist_ok=True)
+    return sub
+
+
+def run_stage3(path: Path, *, llm: str = 'none', model: str = 'qwen2.5:1.5b',
+               max_evidence: int = 40, dry_run: bool = False) -> dict:
+    if llm not in {'none', 'ollama'}:
+        raise Stage3Error('Only `none` and `ollama` are supported; no external API fallback')
+    ctx, plan, capabilities = _validated_project(path)
+    evidence, stats = select_evidence(ctx, max_evidence=max_evidence)
+    if dry_run:
+        return {
+            'project': ctx.title, 'mode': llm,
+            'planned_capabilities': [t['capability'] for t in plan['tasks']],
+            'executable_now': sorted(capabilities & {'analyze', 'compare', 'gaps', 'consolidate', 'design', 'generate'}),
+            'document_count': stats['indexed_documents'],
+            'evidence_selection': stats,
+            'writes_anything': False,
+        }
+    if 'analyze' not in capabilities:
+        raise Stage3Error('The approved plan does not request document analysis')
+
+    # Pure capability functions. An optional model cannot modify references.
+    files: dict[str, str] = {'analysis.md': analyze(evidence, stats)}
+    comparisons: list[dict] = []
+    if 'compare' in capabilities:
+        comparison_text, comparisons = compare(evidence)
+        files['comparison.md'] = comparison_text
+    if 'gaps' in capabilities:
+        files['open_gap_questions.md'] = gaps(evidence, comparisons)
+    if 'consolidate' in capabilities:
+        files['consolidated_excerpts.md'] = consolidate(evidence)
+    if 'design' in capabilities:
+        files['document_outline.md'] = design_outline(ctx, plan['requested_deliverables'])
+
+    findings: list[dict] = []
+    sections: list[dict] = []
+    inference = {'provider': 'none', 'model': None, 'notes': 'Deterministic extractive mode; no LLM calls'}
+    if llm == 'ollama':
+        findings, sections, inference = interpret_locally(ctx, evidence, model)
+        files['model_observations.md'] = _render_llm_findings(findings)
+    if 'generate' in capabilities:
+        files['draft.md'] = draft(ctx, evidence, findings, sections)
+
+    files['review_checklist.md'] = (
+        '# Stage 3 review checklist\n\n'
+        '- [ ] Confirm every excerpt and locator against the original local file.\n'
+        '- [ ] Confirm potential gaps/conflicts against the **full** source collection.\n'
+        '- [ ] Distinguish reference requirements from organizational practices.\n'
+        '- [ ] Check completeness, errors, terminology, and unsupported assertions.\n'
+        '- [ ] Resolve unrepresented source documents and omitted evidence, if any.\n'
+        '- [ ] Approve separately in Stage 4; nothing here is published or approved.\n'
+    )
+    evidence_json = [item.as_dict() for item in evidence]
+    files['evidence.json'] = _json(evidence_json)
+    files['comparison_candidates.json'] = _json(comparisons)
+    files['model_findings.json'] = _json(findings)
+    validation = _checked_references({key: val for key, val in files.items() if key.endswith('.md')},
+                                     {item.id for item in evidence})
+    if not validation['passed']:
+        raise Stage3Error('Citation validation failed: ' + '; '.join(validation['errors']))
+    files['validation.json'] = _json(validation)
+
+    run_id = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid4().hex[:8]
+    manifest = {
+        'stage': 3, 'run_id': run_id, 'created_at_utc': datetime.now(timezone.utc).isoformat(),
+        'project': ctx.title, 'context_sha256': ctx.sha256,
+        'plan_sha256': plan['plan_sha256'],
+        'capabilities_in_plan': [t['capability'] for t in plan['tasks']],
+        'executed_capabilities': sorted(capabilities & {'analyze', 'compare', 'gaps', 'consolidate', 'design', 'generate'}),
+        'stage4_pending_capabilities': sorted(capabilities & {'validate', 'review', 'publish'}),
+        'document_hashes': {row['relative_path']: row['content_sha256']
+                            for row in inventory(ctx.project_dir)},
+        'evidence_selection': stats, 'inference': inference,
+        'approval_status': 'draft_only', 'no_external_api_used': True,
+        'files': {name: sha256(text.encode('utf-8')).hexdigest() for name, text in files.items()},
+    }
+    files['manifest.json'] = _json(manifest)
+    # Catch modifications made after evidence selection, including during model inference.
+    check_fresh_index(ctx)
+    base = _safe_output_base(ctx)
+    destination = base / run_id
+    # New UUID directory only: never overwrite files, even other Stage 3 runs.
+    destination.mkdir(exist_ok=False)
+    for name, content in files.items():
+        output_path = destination / name
+        output_path.write_text(content, encoding='utf-8', errors='strict')
+    return {'project': ctx.title, 'run_id': run_id, 'output_dir': str(destination),
+            'files_created': sorted(files), 'evidence_selection': stats,
+            'llm': inference['provider'], 'status': 'draft_for_review'}

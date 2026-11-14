@@ -1,4 +1,4 @@
-"""Local-first documentation planner and Stage 2 document retrieval CLI."""
+"""Local-first documentation planner, retrieval, and draft-generation CLI."""
 from __future__ import annotations
 
 import argparse
@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 
 from engine.context import parse_context
-from engine.ingest import ingest_project
+from engine.ingest import ingest_project, run_stage3
 from engine.planner import plan_project
 from engine.review import get_status, record_decision, save_draft
 from engine.store import inventory, search
@@ -23,6 +23,12 @@ def main(argv: list[str] | None = None) -> int:
     action.add_argument("--ingest", action="store_true", help="Read inputs/references into local SQLite search index")
     action.add_argument("--list-docs", action="store_true", help="List indexed documents")
     action.add_argument("--search", metavar="TEXT", help="Search indexed content")
+    action.add_argument("--check", action="store_true", help="Check if approved plan and indexed evidence are ready for Stage 3")
+    action.add_argument("--run", action="store_true", help="Generate Stage 3 review drafts locally")
+    parser.add_argument("--llm", choices=["none", "ollama"], default="none",
+                        help="Stage 3 inference; none is local deterministic mode")
+    parser.add_argument("--max-evidence", type=int, default=40,
+                        help="Maximum source chunks used for Stage 3 (4–200)")
     parser.add_argument("--role", choices=["all", "inputs", "references"], default="all")
     parser.add_argument("--limit", type=int, default=8)
     parser.add_argument("--match-all", action="store_true", help="Require all search terms")
@@ -46,6 +52,11 @@ def main(argv: list[str] | None = None) -> int:
             result = ingest_project(ctx.project_dir)
             print(json.dumps(result, indent=2, ensure_ascii=False))
             return 1 if result["errors"] else 0
+        if args.run or args.check:
+            result = run_stage3(ctx.project_dir, llm=args.llm, model=args.model,
+                                max_evidence=args.max_evidence, dry_run=args.check)
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0
         if args.list_docs:
             print(json.dumps(inventory(ctx.project_dir), indent=2, ensure_ascii=False))
             return 0

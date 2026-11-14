@@ -1,0 +1,14 @@
+[
+  {
+    "source_ids": [
+      "E0015",
+      "E0006"
+    ],
+    "topics": [
+      "activities",
+      "engineering"
+    ],
+    "score": 2,
+    "classification": "candidate_topic_overlap"
+  }
+]
