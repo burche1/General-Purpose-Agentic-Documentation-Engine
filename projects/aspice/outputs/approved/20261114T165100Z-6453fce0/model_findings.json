@@ -1,0 +1,17 @@
+[
+  {
+    "text": "The team stores software requirements in DOORS and records review outcomes, indicating a valid existing practice of software requirements management.",
+    "evidence_ids": [
+      "E0001",
+      "E0004"
+    ],
+    "kind": "observation"
+  },
+  {
+    "text": "The software development process lacks clear documentation of interfaces and accountable roles, suggesting a gap in process documentation.",
+    "evidence_ids": [
+      "E0007"
+    ],
+    "kind": "observation"
+  }
+]

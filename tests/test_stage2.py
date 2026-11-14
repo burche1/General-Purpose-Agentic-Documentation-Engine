@@ -328,3 +328,138 @@ class StageThreeTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+# Stage 4 tests: integrated QA/release + remote API approval (no network calls).
+from engine.review import (review_generated_draft, decide_generated_draft,
+                           publish_generated_draft)
+from engine.ollama import (preview_remote, approve_remote, interpret_remotely,
+                           RemoteApprovalError)
+from engine.store import Evidence
+
+
+class StageFourTests(unittest.TestCase):
+    setUp = StageThreeTests.setUp
+    approve = StageThreeTests.approve
+    def _run(self):
+        self.approve()
+        ingest_project(self.project)
+        return run_stage3(self.project)
+
+    def test_requested_run_folder_format_and_release(self):
+        item = self._run()
+        self.assertRegex(item['run_id'], r'^draft-\d{2}-\d{2}-\d{4}-\d{2}-\d{2}-\d{2}(?:-\d{2})?$')
+        report = review_generated_draft(self.project, item['run_id'])
+        self.assertEqual(report['blockers'], [])
+        self.assertTrue(report['source_coverage_complete'])
+        decision = decide_generated_draft(self.project, item['run_id'], approved=True,
+                                          comment='Manually checked citations and generated sections.')
+        self.assertEqual(decision['decision'], 'approved')
+        released = publish_generated_draft(self.project, item['run_id'])
+        self.assertEqual(released['status'], 'published_locally')
+        self.assertTrue((Path(released['release_dir']) / 'draft.md').exists())
+        self.assertTrue((Path(released['release_dir']) / 'release.json').exists())
+        with self.assertRaisesRegex(ValueError, 'already exists'):
+            publish_generated_draft(self.project, item['run_id'])
+
+    def test_partial_selection_requires_acknowledgement(self):
+        for i in range(10):
+            (self.inputs if hasattr(self, 'inputs') else self.project / 'inputs').joinpath(f'section{i}.md').write_text(
+                '# Heading\n\nThis process has multiple meaningful requirements and verification activities.\n', encoding='utf-8')
+        self.approve()
+        ingest_project(self.project)
+        item = run_stage3(self.project, max_evidence=4)
+        report = review_generated_draft(self.project, item['run_id'])
+        self.assertFalse(report['source_coverage_complete'])
+        with self.assertRaisesRegex(ValueError, 'Partial source coverage'):
+            decide_generated_draft(self.project, item['run_id'], approved=True,
+                                   comment='Checked sources')
+        decision = decide_generated_draft(self.project, item['run_id'], approved=True,
+                                          allow_partial=True,
+                                          comment='I accept that this is only an exploratory partial sample.')
+        self.assertEqual(decision['scope'], 'partial_exploratory')
+        self.assertEqual(publish_generated_draft(self.project, item['run_id'])['scope'], 'partial_exploratory')
+
+    def test_tampered_draft_rejected(self):
+        item = self._run()
+        draft = Path(item['output_dir']) / 'draft.md'
+        draft.write_text(draft.read_text() + '\nUnauthorized change\n', encoding='utf-8')
+        report = review_generated_draft(self.project, item['run_id'])
+        self.assertTrue(any('modified' in b.lower() for b in report['blockers']))
+        with self.assertRaisesRegex(ValueError, 'blocking QA'):
+            decide_generated_draft(self.project, item['run_id'], approved=True, comment='Reviewed')
+
+    def test_changed_source_after_approval_blocks_release(self):
+        item = self._run()
+        decide_generated_draft(self.project, item['run_id'], approved=True, comment='Reviewed content.')
+        (self.project / 'inputs' / 'procedure.md').write_text('Changed source', encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'stale or QA blockers'):
+            publish_generated_draft(self.project, item['run_id'])
+
+    def test_rejection_blocks_release(self):
+        item = self._run()
+        result = decide_generated_draft(self.project, item['run_id'], approved=False, comment='Needs revision.')
+        self.assertEqual(result['decision'], 'rejected')
+        with self.assertRaisesRegex(ValueError, 'rejected'):
+            publish_generated_draft(self.project, item['run_id'])
+
+    def test_external_preview_explicit_approval_and_exact_payload(self):
+        self.approve()
+        ingest_project(self.project)
+        with patch('engine.ollama.build_opener') as network:
+            preview = run_stage3(self.project, llm='openai', model='gpt-mini', preview_api=True)
+            self.assertTrue(preview['no_api_call'])
+            self.assertIn('gpt-5.4-mini', preview['model'])
+            network.assert_not_called()
+            # Explicit approval must be bound to that exact payload and model.
+            with self.assertRaisesRegex(RemoteApprovalError, 'does not match'):
+                run_stage3(self.project, llm='openai', model='gpt-pro', approve_api=preview['request_sha256'])
+            approval = run_stage3(self.project, llm='openai', model='gpt-mini',
+                                  approve_api=preview['request_sha256'])
+            self.assertTrue(approval['no_api_call'])
+            network.assert_not_called()
+
+    def test_no_remote_api_without_preview_and_grant(self):
+        self.approve()
+        ingest_project(self.project)
+        with patch('engine.ollama.build_opener') as network:
+            with self.assertRaisesRegex(RemoteApprovalError, 'previewed'):
+                run_stage3(self.project, llm='openai', model='gpt-mini')
+            network.assert_not_called()
+
+    def test_remote_payload_changes_after_input_index_update(self):
+        self.approve()
+        ingest_project(self.project)
+        preview = run_stage3(self.project, llm='openai', model='gpt-mini', preview_api=True)
+        (self.project / 'inputs' / 'procedure.md').write_text('# Changed\n\nNew engineering information.', encoding='utf-8')
+        ingest_project(self.project)
+        with self.assertRaisesRegex(RemoteApprovalError, 'does not match'):
+            run_stage3(self.project, llm='openai', model='gpt-mini', approve_api=preview['request_sha256'])
+
+    def test_one_time_remote_permission_with_mocked_openai_response(self):
+        import io
+        import os
+        self.approve()
+        ingest_project(self.project)
+        requested = run_stage3(self.project, llm='openai', model='gpt-mini', preview_api=True)
+        run_stage3(self.project, llm='openai', model='gpt-mini', approve_api=requested['request_sha256'])
+        response = {
+            'status': 'completed',
+            'output': [{'type': 'message', 'content': [{'type': 'output_text', 'text': json.dumps({
+                'findings': [{'kind': 'observation', 'text': 'Requirements are described.', 'evidence_ids': ['E0001']}],
+                'draft_sections': []
+            })}]}],
+            'usage': {'input_tokens': 100, 'output_tokens': 40},
+        }
+        fake_response = io.BytesIO(json.dumps(response).encode('utf-8'))
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key-never-reveal'}), \
+             patch('engine.ollama.build_opener') as mocked:
+            mocked.return_value.open.return_value = fake_response
+            generated = run_stage3(self.project, llm='openai', model='gpt-mini')
+            self.assertEqual(generated['llm'], 'openai')
+            called_request = mocked.return_value.open.call_args.args[0]
+            self.assertEqual(called_request.full_url, 'https://api.openai.com/v1/responses')
+            self.assertEqual(json.loads(called_request.data.decode('utf-8'))['store'], False)
+            mocked.reset_mock()
+            with self.assertRaisesRegex(RemoteApprovalError, 'overwrite'):
+                run_stage3(self.project, llm='openai', model='gpt-mini')
+            mocked.assert_not_called()

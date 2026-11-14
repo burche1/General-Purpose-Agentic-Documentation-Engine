@@ -1,0 +1,7 @@
+{
+  "request_sha256": "0a837283ee49df5f54d077d6b0e27ab831d2b8f8c1632ca70be23db53c4f725e",
+  "model": "gpt-5.4-mini",
+  "endpoint": "https://api.openai.com/v1/responses",
+  "approved_at_utc": "2026-11-14T17:24:59.158518+00:00",
+  "context_sha256": "d84f34ae43f48db02ab08d0e51722346ef2ec0221727f69e1f5e74dc9804898f"
+}

@@ -88,7 +88,6 @@ def ingest_project(project_dir: Path) -> dict:
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
-from uuid import uuid4
 import json
 import re
 
@@ -160,9 +159,14 @@ def _safe_output_base(ctx: ProjectContext) -> Path:
 
 
 def run_stage3(path: Path, *, llm: str = 'none', model: str = 'qwen2.5:1.5b',
-               max_evidence: int = 40, dry_run: bool = False) -> dict:
-    if llm not in {'none', 'ollama'}:
-        raise Stage3Error('Only `none` and `ollama` are supported; no external API fallback')
+               max_evidence: int = 40, dry_run: bool = False, preview_api: bool = False,
+               approve_api: str | None = None) -> dict:
+    if llm not in {'none', 'ollama', 'openai'}:
+        raise Stage3Error('Unknown inference backend')
+    if (preview_api or approve_api) and llm != 'openai':
+        raise Stage3Error('--preview-api and --approve-api require --llm openai')
+    if preview_api and approve_api:
+        raise Stage3Error('Preview and approval must be separate commands')
     ctx, plan, capabilities = _validated_project(path)
     evidence, stats = select_evidence(ctx, max_evidence=max_evidence)
     if dry_run:
@@ -174,6 +178,11 @@ def run_stage3(path: Path, *, llm: str = 'none', model: str = 'qwen2.5:1.5b',
             'evidence_selection': stats,
             'writes_anything': False,
         }
+    if preview_api or approve_api:
+        from .ollama import preview_remote, approve_remote
+        if preview_api:
+            return preview_remote(ctx, evidence, model)
+        return approve_remote(ctx, evidence, model, approve_api)
     if 'analyze' not in capabilities:
         raise Stage3Error('The approved plan does not request document analysis')
 
@@ -195,6 +204,10 @@ def run_stage3(path: Path, *, llm: str = 'none', model: str = 'qwen2.5:1.5b',
     inference = {'provider': 'none', 'model': None, 'notes': 'Deterministic extractive mode; no LLM calls'}
     if llm == 'ollama':
         findings, sections, inference = interpret_locally(ctx, evidence, model)
+        files['model_observations.md'] = _render_llm_findings(findings)
+    elif llm == 'openai':
+        from .ollama import interpret_remotely
+        findings, sections, inference = interpret_remotely(ctx, evidence, model)
         files['model_observations.md'] = _render_llm_findings(findings)
     if 'generate' in capabilities:
         files['draft.md'] = draft(ctx, evidence, findings, sections)
@@ -218,7 +231,8 @@ def run_stage3(path: Path, *, llm: str = 'none', model: str = 'qwen2.5:1.5b',
         raise Stage3Error('Citation validation failed: ' + '; '.join(validation['errors']))
     files['validation.json'] = _json(validation)
 
-    run_id = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid4().hex[:8]
+    # Local wall-clock time as requested; monotonic suffix only on collisions.
+    run_id = 'draft-' + datetime.now().strftime('%d-%m-%Y-%H-%M-%S')
     manifest = {
         'stage': 3, 'run_id': run_id, 'created_at_utc': datetime.now(timezone.utc).isoformat(),
         'project': ctx.title, 'context_sha256': ctx.sha256,
@@ -229,7 +243,7 @@ def run_stage3(path: Path, *, llm: str = 'none', model: str = 'qwen2.5:1.5b',
         'document_hashes': {row['relative_path']: row['content_sha256']
                             for row in inventory(ctx.project_dir)},
         'evidence_selection': stats, 'inference': inference,
-        'approval_status': 'draft_only', 'no_external_api_used': True,
+        'approval_status': 'draft_only', 'no_external_api_used': llm != 'openai',
         'files': {name: sha256(text.encode('utf-8')).hexdigest() for name, text in files.items()},
     }
     files['manifest.json'] = _json(manifest)
@@ -237,7 +251,13 @@ def run_stage3(path: Path, *, llm: str = 'none', model: str = 'qwen2.5:1.5b',
     check_fresh_index(ctx)
     base = _safe_output_base(ctx)
     destination = base / run_id
-    # New UUID directory only: never overwrite files, even other Stage 3 runs.
+    count = 2
+    while destination.exists():
+        destination = base / f'{run_id}-{count:02d}'
+        count += 1
+    run_id = destination.name
+    manifest['run_id'] = run_id
+    files['manifest.json'] = _json(manifest)
     destination.mkdir(exist_ok=False)
     for name, content in files.items():
         output_path = destination / name
