@@ -86,7 +86,7 @@ def plan_project(ctx: ProjectContext, planner: str = "rules", model: str = "qwen
     for folder in ("inputs", "references", "templates"):
         if not (ctx.project_dir / folder).is_dir():
             warnings.append(f"Optional project directory not found: {folder}/")
-    warnings.append("Stage 1 creates and reviews a plan only; document processing is not implemented yet.")
+    warnings.append("Planning only proposes tasks; use --ingest and --run for local document processing.")
     warnings.append("External LLM calls are not implemented. Ollama mode uses local loopback only.")
 
     task_ids = {cap: f"T{idx:02d}" for idx, cap in enumerate(selected, start=1)}

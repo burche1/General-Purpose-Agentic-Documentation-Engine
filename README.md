@@ -1,76 +1,90 @@
-# Document Agent — Stage 2: Generic Ingestion & Local Retrieval
+# Document Agent — Local-First Documentation Engine (Stages 1–3)
 
-A local-first, context-driven documentation project. **Stage 1** generates and approves a task plan from `context.md` (without reading documents). **Stage 2** extracts documents from `inputs/` and `references/`, creates a local SQLite FTS5 search index, and returns source-linked search results. There are no document-generating agents yet.
+One Python application, one `README.md`, one `main.py`. The project reads `context.md`, plans documentation work, extracts and indexes local documents, and produces source-linked **drafts for human review**. It is deliberately not a formal compliance assessor.
 
-No cloud service, network connection, Ollama or LangGraph is required for Stage 2. Optional local Ollama planning from Stage 1 is preserved. Ollama is a separate system program; it does not need to be installed inside your `.venv`.
+## Requirements and setup
 
-## Installation (Ubuntu)
-
-Requires Python 3.10+ (Ubuntu 24.04 works).
+Python 3.10+ on Ubuntu or another supported platform. In your existing working folder:
 
 ```bash
-cd document-agent-stage2
-python3 -m venv .venv
+python3 -m venv .venv                 # only if not yet created
 source .venv/bin/activate
 python -m pip install -e .
 ```
 
-## Quick start
+The package overwrites only existing source-code paths and leaves `projects/`, `.local/`, `reviews/`, `inputs/`, `references/`, `templates/`, and `outputs/` unchanged. Your repository should not track confidential files by default.
+
+## Complete workflow
 
 ```bash
-# Stage 1: plan and approve (no documents read)
+# 1. Read context.md, propose a task plan, and review it
 python main.py --project projects/aspice
 cat projects/aspice/reviews/plan.md
 python main.py --project projects/aspice --approve
 
-# Add your own local documents under inputs/ and references/.
-# Or use illustrative sample documents to test:
-cp samples/example_swe1.md projects/aspice/inputs/
-cp samples/example_reference.md projects/aspice/references/
-
-# Stage 2: extract, index, inspect and search locally
+# 2. Supply local documents in inputs/ and references/, then ingest them
 python main.py --project projects/aspice --ingest
 python main.py --project projects/aspice --list-docs
-python main.py --project projects/aspice --search "requirements review"
-python main.py --project projects/aspice --search "accountable roles" --role references
+python main.py --project projects/aspice --search "requirements"
+
+# 3. Validate the approved plan and source index (no generated files)
+python main.py --project projects/aspice --check
+
+# 4. Generate source-linked draft artifacts without an LLM
+python main.py --project projects/aspice --run
+
+# 5. Optional: locally inferred observations and prose sections
+#    Requires Ollama installed separately and the model pulled locally.
+ollama pull qwen2.5:1.5b
+python main.py --project projects/aspice --run --llm ollama --model qwen2.5:1.5b
 ```
 
-Outputs: `projects/aspice/.local/documents.sqlite3` (search index) and `.local/ingestion_report.json` (warnings/errors). Each search result contains the source role, relative document path, location (page, paragraph, slide, sheet row or line range), text excerpt, and ranking score. Run `--ingest` again after adding/editing/removing documents; unchanged documents are skipped and removed files are purged.
+All Stage 1/2 commands remain available. When documents change, run `--ingest` again. When `context.md` changes, regenerate and approve a new plan first. The `--check` and `--run` flags fail closed if the plan is not approved, the ingestion report has errors, or the indexed documents have changed. An `--ingest` command still requires Stage 1 approval.
 
-## Supported formats
+## Stage 3 generated artifacts
 
-- `.md`, `.markdown`, `.txt`, `.rst`: line-ranged text blocks
-- `.pdf`: searchable text by page (PyMuPDF); image-only scans need later OCR support
-- `.docx`: paragraph/table rows (python-docx)
-- `.html`, `.htm`: visible text blocks (HTMLParser; scripts/styles ignored)
-- `.csv`: row-by-row text (Python CSV)
-- `.xlsx`: row text and sheet coordinates (openpyxl)
-- `.pptx`: slide text and table rows (python-pptx)
+Each `--run` creates a new folder under `projects/<name>/outputs/stage3/<run-id>/`, containing applicable artifacts:
 
-For rich formats, this is **text extraction**, not perfect semantic document understanding: formulas, images, embedded diagrams, slide relationships, DOCX headers and footers are not interpreted. Location labels reflect the parser's view, not canonical citations. Unsupported files, oversized files (>25 MiB), and PDFs without extractable text produce errors. Source errors do not become empty evidence of noncompliance.
+- `analysis.md` — extracted local evidence with source IDs and locations
+- `comparison.md` and `comparison_candidates.json` — candidate topical overlaps, **not** verified contradictions
+- `open_gap_questions.md` — questions to investigate, **not** confirmed missing requirements
+- `consolidated_excerpts.md` — deduplicated original excerpts when consolidation was planned
+- `document_outline.md` — outline based on requested deliverables
+- `draft.md` — extractive draft or optional local-model prose draft
+- `evidence.json` — source IDs, exact locations, file hashes and selected chunks
+- `validation.json` — syntactic citation checks only
+- `review_checklist.md` and `manifest.json` — review questions and reproducibility metadata
 
-## Stage 2 architecture
+Some files appear only when their capability is included in the **approved** plan. The engine selects bounded evidence: the output is never a guarantee of exhaustive coverage. Inspect `manifest.json` and `analysis.md` for omitted/unindexed material.
 
-- `engine/extractors.py`: format parsers, each yielding `{text, locator, kind}` blocks, with bounded chunking.
-- `engine/ingest.py`: traverses only project `inputs/` and `references/`, hashes local files, extracts, increments index, records ingestion report.
-- `engine/store.py`: project-local SQLite catalog with FTS5 indexing, metadata and source-located keyword retrieval.
-- `main.py`: shared Stage 1 planner/review commands and Stage 2 ingestion/search commands.
+## Document formats and limitations
 
-## Safety and privacy
+Stage 2 handles searchable PDF, DOCX, Markdown, TXT, HTML, CSV, XLSX and PPTX text. Scanned PDFs and embedded diagrams are not fully interpreted. FTS5 search is lexical; semantic vector retrieval is not implemented yet. The rule-based Stage 3 analysis is exploratory and does not infer compliance or final correctness. The small local model can propose observations and draft text but cannot verify technical truth. Every draft requires human review; formal validation and publishing remain Stage 4 tasks.
 
-- All data stays in project-local files. Stage 2 has **no LLM calls and no network I/O**.
-- `context.md` and file contents are **not executable instructions**. Parsing will never invoke shell commands or follow symlinks in input directories.
-- Ingestion requires approval of the exact current Stage 1 plan. A changed `context.md` invalidates approval.
-- `inputs/`, `references/`, `.local/`, review files, and generated output files should not be Git committed by default; verify `.gitignore` rules before pushing.
-- Source-file hashes and source locations are preserved in the database. For the MVP, the original source files themselves are not copied into a separate immutable archive; treat them as the authority.
-- Local Ollama can optionally interpret Stage 1 context only: `ollama pull qwen2.5:1.5b`, then `python main.py --project projects/aspice --planner ollama --model qwen2.5:1.5b`. No automatic external API fallback is implemented.
+## Privacy
 
-## Next stage
+All documents, indexes and output files remain on the local computer. Stage 3 permits no external API fallback. `--llm ollama` communicates only with `127.0.0.1:11434` using an allowlist (`qwen2.5:1.5b`, `qwen2.5:3b`); avoid installing cloud-proxied Ollama models. No document contents are treated as executable instructions. Unapproved plan changes, stale indexes, and source failures stop analysis.
 
-Stage 3 will connect the indexed evidence to reusable analysis and generation capabilities, adding grounded claims, citations, and model-assisted processing with human review. A deterministic coverage engine remains separate from any model judgment.
+## Architecture within existing files
+
+- `main.py`: common CLI for all stages (planning, approval, ingestion, search, check, run)
+- `engine/context.py`: parse human-authored `context.md`
+- `engine/planner.py`: capability selection and validated execution plan
+- `engine/review.py`: human plan approval and status
+- `engine/extractors.py`: local document format extraction
+- `engine/store.py`: SQLite/FTS5, local evidence selection and source freshness checks
+- `engine/catalog.py`: reusable deterministic analysis/comparison/consolidation/drafting capabilities
+- `engine/ollama.py`: optional local-only task planning and document interpretation
+- `engine/ingest.py`: document index maintenance and the Stage 3 execution workflow
+
+This is a **single-project, local Python MVP**. It intentionally does not require LangGraph yet; Stage 4 may introduce resumable graph orchestration and document sign-off. The modular functions are callable from a LangGraph graph later.
 
 ## Tests
 
 ```bash
 python -m unittest discover -s tests -v
 ```
+
+## Updating an existing Stage 2 installation
+
+First restore your exact Stage 2 Git commit and remove the old Stage 3 add-on files after backing up any work. Extract the replacement ZIP into the repository root with **overwrite** enabled (`unzip -o`), then run the tests. The ZIP has only files already present in Stage 2; it does not include project data or introduce a separate Stage 3 guide or launcher.

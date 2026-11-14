@@ -99,3 +99,168 @@ def search(project_dir: Path, query: str, role: str = 'all', limit: int = 8, mat
           ORDER BY score ASC, d.relative_path, c.ordinal
           LIMIT ?''', (fts_query, role, role, limit)).fetchall()
         return [dict(row) for row in rows]
+
+
+# Stage 3: local evidence selection, document freshness, source provenance
+from dataclasses import asdict, dataclass
+from hashlib import sha256
+from pathlib import Path
+import re
+
+from .context import ProjectContext
+from .extractors import SUPPORTED
+
+MAX_INDEXED_CHUNKS = 12000
+STOPWORDS = frozenset(
+    "the and for with from this that have will should into their about which "
+    "when where there these those your current documents document documentation "
+    "against using local generate create analyze identify process review report "
+    "input inputs references reference existing source sources based project "
+    "information material objective scope tasks output requirements".split()
+)
+
+
+@dataclass(frozen=True)
+class Evidence:
+    id: str
+    source_role: str
+    relative_path: str
+    locator: str
+    kind: str
+    content: str
+    document_sha256: str
+    relevance: int
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+    @property
+    def citation(self) -> str:
+        return f"[{self.id}]"
+
+
+def words(text: str) -> set[str]:
+    return {
+        token for token in re.findall(r"[^\W_]+", text.casefold(), flags=re.UNICODE)
+        if len(token) >= 4 and token not in STOPWORDS
+    }
+
+
+def _sha256_file(path: Path) -> str:
+    digest = sha256()
+    with path.open('rb') as stream:
+        while data := stream.read(1024 * 1024):
+            digest.update(data)
+    return digest.hexdigest()
+
+
+def check_fresh_index(ctx: ProjectContext) -> list[dict]:
+    """Refuse stale/partial indexes, including modified/deleted/additional files."""
+    from .ingest import iter_sources
+    project = ctx.project_dir
+    report_path = project / '.local' / 'ingestion_report.json'
+    if report_path.is_symlink() or not report_path.is_file():
+        raise ValueError('No completed Stage 2 ingestion report. Run main.py --ingest first.')
+    import json
+    try:
+        report = json.loads(report_path.read_text(encoding='utf-8'))
+    except (OSError, ValueError) as exc:
+        raise ValueError('Stage 2 ingestion report could not be read') from exc
+    if report.get('errors'):
+        raise ValueError('Stage 2 ingestion has errors; fix source files and rerun --ingest before Stage 3')
+    rows = inventory(project)
+    if not rows:
+        raise ValueError('No indexed documents. Add local documents, then run Stage 2 --ingest.')
+    recorded = {item['relative_path']: item for item in rows}
+    actual = {}
+    for _, path in iter_sources(project):
+        relative = path.relative_to(project).as_posix()
+        actual[relative] = _sha256_file(path)
+    if set(recorded) != set(actual):
+        diff = sorted(set(recorded).symmetric_difference(actual))
+        raise ValueError('Document collection differs from indexed files. Rerun --ingest. Changed paths: ' + ', '.join(diff[:8]))
+    for path, fingerprint in actual.items():
+        if fingerprint != recorded[path]['content_sha256']:
+            raise ValueError(f'Document modified since indexing: {path}. Rerun --ingest.')
+        if recorded[path]['chunks'] < 1:
+            raise ValueError(f'Indexed document has no extractable chunks: {path}')
+    return rows
+
+
+def find_skipped_paths(project: Path) -> list[str]:
+    """Report non-indexable source files; do not follow links or hidden files."""
+    skipped = []
+    for role in ('inputs', 'references'):
+        root = project / role
+        if not root.is_dir() or root.is_symlink():
+            continue
+        for file in sorted(root.rglob('*')):
+            relative = file.relative_to(project).as_posix()
+            if any(part.startswith('.') for part in file.relative_to(root).parts):
+                continue
+            if file.is_symlink():
+                skipped.append(relative + ' (symlink not followed)')
+            elif file.is_file() and file.suffix.lower() not in SUPPORTED:
+                skipped.append(relative + ' (unsupported file type)')
+    return skipped
+
+
+def select_evidence(ctx: ProjectContext, max_evidence: int = 40) -> tuple[list[Evidence], dict]:
+    if not 4 <= max_evidence <= 200:
+        raise ValueError('--max-evidence must be between 4 and 200')
+    documents = check_fresh_index(ctx)
+    theme = words(ctx.content('objective', 'goals') + '\n' + ctx.content('scope', 'boundaries'))
+    with connect(ctx.project_dir) as con:
+        raw = con.execute('''
+            SELECT d.relative_path, d.source_role, d.content_sha256,
+                   c.ordinal, c.locator, c.kind, c.content
+            FROM chunks c JOIN documents d ON c.document_id=d.id
+            ORDER BY d.source_role, d.relative_path, c.ordinal
+            LIMIT ?
+        ''', (MAX_INDEXED_CHUNKS + 1,)).fetchall()
+    if len(raw) > MAX_INDEXED_CHUNKS:
+        raise ValueError(f'Index has more than {MAX_INDEXED_CHUNKS} chunks; narrow the project for this MVP')
+
+    groups: dict[str, list[tuple[int, int, dict]]] = {}
+    for row in raw:
+        item = dict(row)
+        relevance = len(words(item['content']) & theme)
+        groups.setdefault(item['relative_path'], []).append((relevance, item['ordinal'], item))
+    # Always include first chunk of each document when possible; then select the
+    # highest-scoring chunks from each document round-robin to avoid domination.
+    queues: dict[str, list[tuple[int, int, dict]]] = {}
+    for rel, items in groups.items():
+        first = min(items, key=lambda x: x[1])
+        rest = sorted((item for item in items if item != first), key=lambda x: (-x[0], x[1]))
+        queues[rel] = [first] + rest
+    ordered_paths = sorted(queues, key=lambda p: (0 if p.startswith('inputs/') else 1, p))
+    chosen = []
+    while len(chosen) < max_evidence and any(queues.values()):
+        for rel in ordered_paths:
+            if queues[rel] and len(chosen) < max_evidence:
+                chosen.append(queues[rel].pop(0))
+    evidence = []
+    for number, (score, _, item) in enumerate(chosen, start=1):
+        evidence.append(Evidence(
+            id=f'E{number:04d}',
+            source_role=item['source_role'],
+            relative_path=item['relative_path'],
+            locator=item['locator'],
+            kind=item['kind'],
+            content=item['content'],
+            document_sha256=item['content_sha256'],
+            relevance=score,
+        ))
+    selected_docs = {ev.relative_path for ev in evidence}
+    skipped = find_skipped_paths(ctx.project_dir)
+    stats = {
+        'unindexed_paths': skipped,
+        'indexed_documents': len(documents),
+        'indexed_chunks': len(raw),
+        'selected_chunks': len(evidence),
+        'omitted_chunks': len(raw) - len(evidence),
+        'unrepresented_documents': sorted(set(groups) - selected_docs),
+        'selection_policy': 'First chunk then lexical relevance, round-robin by document; exploratory, not exhaustive',
+        'coverage_complete': len(raw) == len(evidence) and not skipped,
+    }
+    return evidence, stats

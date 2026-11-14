@@ -1,0 +1,26 @@
+[
+  {
+    "source_ids": [
+      "E0004",
+      "E0005"
+    ],
+    "topics": [
+      "records",
+      "software"
+    ],
+    "score": 2,
+    "classification": "candidate_topic_overlap"
+  },
+  {
+    "source_ids": [
+      "E0004",
+      "E0020"
+    ],
+    "topics": [
+      "outcomes",
+      "software"
+    ],
+    "score": 2,
+    "classification": "candidate_topic_overlap"
+  }
+]

@@ -1,0 +1,81 @@
+{
+  "stage": 3,
+  "run_id": "20261114T165100Z-6453fce0",
+  "created_at_utc": "2026-11-14T16:51:00.947297+00:00",
+  "project": "Automotive Software Process Engineering",
+  "context_sha256": "d84f34ae43f48db02ab08d0e51722346ef2ec0221727f69e1f5e74dc9804898f",
+  "plan_sha256": "80f18207b21acb5b399825175c68ebb5bcfa7aaab5e74814e54ece4aacb95abb",
+  "capabilities_in_plan": [
+    "inventory",
+    "extract",
+    "retrieve",
+    "analyze",
+    "compare",
+    "gaps",
+    "design",
+    "generate",
+    "validate",
+    "review",
+    "publish"
+  ],
+  "executed_capabilities": [
+    "analyze",
+    "compare",
+    "design",
+    "gaps",
+    "generate"
+  ],
+  "stage4_pending_capabilities": [
+    "publish",
+    "review",
+    "validate"
+  ],
+  "document_hashes": {
+    "inputs/example_swe1.md": "93d9b939c61d982696f897e3ab157b4ebc9910413a521c776ff2ad217567e192",
+    "references/Automotive-SPICE-PAM-v41.pdf": "1dd3e26172946327d88670eb616b144a6d315dfb2a7b4a817b1769b997624d1e",
+    "references/example_reference.md": "5eedd8a214d42565cbc13a5a00862bb0f7eae2f699b345d0d321281a7db0aa75"
+  },
+  "evidence_selection": {
+    "unindexed_paths": [],
+    "indexed_documents": 3,
+    "indexed_chunks": 438,
+    "selected_chunks": 40,
+    "omitted_chunks": 398,
+    "unrepresented_documents": [],
+    "selection_policy": "First chunk then lexical relevance, round-robin by document; exploratory, not exhaustive",
+    "coverage_complete": false
+  },
+  "inference": {
+    "provider": "local_ollama",
+    "model": "qwen2.5:1.5b",
+    "attempts": 1,
+    "evidence_ids_supplied": [
+      "E0001",
+      "E0002",
+      "E0003",
+      "E0004",
+      "E0005",
+      "E0006",
+      "E0007",
+      "E0008"
+    ],
+    "evidence_sent_to_model": 8,
+    "selected_evidence_not_supplied": 32,
+    "limitation": "Small bounded sample; citations and claims require human review"
+  },
+  "approval_status": "draft_only",
+  "no_external_api_used": true,
+  "files": {
+    "analysis.md": "13623a65b21915bb3988c429c3a735809d69920a746ac5f869f88d13001a0dc3",
+    "comparison.md": "2fc89cdbef59bdeea40c10827e1b7017f585f2ce397f1ca8a4eb5fa5a7f11b91",
+    "open_gap_questions.md": "9d83a1b6bb1c9e046c777f6ca61fdab630743a148d63422148d68b935d6e8402",
+    "document_outline.md": "0572ae7faa230995b8bcb66797323d947f03ead0eaa2f240feb7c425ff93eee9",
+    "model_observations.md": "8d6d34b79145e240b9c3f4bad40d65ebc48ac2cae1f850262bcb4721e21df871",
+    "draft.md": "6bd9bfa825653c915a4057d5bb63a570e4d4e1262f55b8dea4f10096d408446c",
+    "review_checklist.md": "90f12e9bcb038770418d7bc0c1ada39f4311d12ef138ee172f543960fd41f712",
+    "evidence.json": "7adaf5760044593202fefcfb02054281334e12c6be6ff8de4cf63d46ef55bc1f",
+    "comparison_candidates.json": "8c1e45e87b0bfb6f62131a797bb45f3c1966d8858f0346b0a7aba51b809bc7ee",
+    "model_findings.json": "cebdea4aee215c8c18850a173cc03ba44d31b293fe5ed7d0eaba40845a9a9a3f",
+    "validation.json": "ececb6622ef157950ab51888d824881f8ed44eda21841dad1a10691a44229b3a"
+  }
+}
