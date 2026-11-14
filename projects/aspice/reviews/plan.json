@@ -1,0 +1,170 @@
+{
+  "schema_version": "1.0",
+  "project": "Automotive Software Process Engineering",
+  "context_file": "context.md",
+  "context_sha256": "d84f34ae43f48db02ab08d0e51722346ef2ec0221727f69e1f5e74dc9804898f",
+  "planner": {
+    "mode": "rules",
+    "model": null
+  },
+  "objective": "Analyze our existing software development processes and draft improved process documentation aligned with the supplied Automotive SPICE 4.1 source material. Preserve valid existing practices and distinguish gaps from missing evidence.",
+  "scope": [
+    "SWE.1 to SWE.6 software engineering processes.",
+    "Include roles, process interfaces, work products and traceability.",
+    "Do not claim an official capability rating or assessment outcome."
+  ],
+  "source_roles": {
+    "inputs": "Current/project documents",
+    "references": "Reference and normative material",
+    "templates": "Optional output layouts"
+  },
+  "requested_deliverables": [
+    "As-is process inventory (Markdown).",
+    "Evidence and traceability matrix (CSV).",
+    "Gap and inconsistency report (Markdown).",
+    "Proposed process procedures (Markdown).",
+    "Open questions for human review (Markdown)."
+  ],
+  "quality_criteria": [
+    "Cite source document and location for every substantive finding.",
+    "Keep normative indicators distinct from actual mandatory requirements.",
+    "Do not equate documented process design with demonstrated implementation.",
+    "Do not invent requirements or project evidence."
+  ],
+  "constraints": [
+    "Store and process documents locally.",
+    "Use only a local LLM unless an external payload is separately authorized.",
+    "Never overwrite input or reference documents.",
+    "Human approval is required before final publication."
+  ],
+  "tasks": [
+    {
+      "id": "T01",
+      "capability": "inventory",
+      "title": "Inventory documents",
+      "purpose": "Identify sources, document roles, and versions.",
+      "depends_on": [],
+      "status": "not_started"
+    },
+    {
+      "id": "T02",
+      "capability": "extract",
+      "title": "Extract document content",
+      "purpose": "Parse and normalize source content and source locations.",
+      "depends_on": [
+        "T01"
+      ],
+      "status": "not_started"
+    },
+    {
+      "id": "T03",
+      "capability": "retrieve",
+      "title": "Build local retrieval index",
+      "purpose": "Enable exact and semantic retrieval over local sources.",
+      "depends_on": [
+        "T02"
+      ],
+      "status": "not_started"
+    },
+    {
+      "id": "T04",
+      "capability": "analyze",
+      "title": "Analyze documents",
+      "purpose": "Identify concepts, structures, responsibilities, and findings.",
+      "depends_on": [
+        "T02"
+      ],
+      "status": "not_started"
+    },
+    {
+      "id": "T05",
+      "capability": "compare",
+      "title": "Compare documents and references",
+      "purpose": "Map evidence, differences, and contradictions.",
+      "depends_on": [
+        "T03",
+        "T04"
+      ],
+      "status": "not_started"
+    },
+    {
+      "id": "T06",
+      "capability": "gaps",
+      "title": "Identify gaps",
+      "purpose": "Separate missing information, conflicting evidence, and confirmed gaps.",
+      "depends_on": [
+        "T05"
+      ],
+      "status": "not_started"
+    },
+    {
+      "id": "T07",
+      "capability": "design",
+      "title": "Design document structure",
+      "purpose": "Define the proposed outline and document interfaces.",
+      "depends_on": [
+        "T04",
+        "T05",
+        "T06"
+      ],
+      "status": "not_started"
+    },
+    {
+      "id": "T08",
+      "capability": "generate",
+      "title": "Generate document drafts",
+      "purpose": "Produce output drafts from approved sources and structure.",
+      "depends_on": [
+        "T07"
+      ],
+      "status": "not_started"
+    },
+    {
+      "id": "T09",
+      "capability": "validate",
+      "title": "Validate outputs",
+      "purpose": "Verify source support and stated quality criteria.",
+      "depends_on": [
+        "T04",
+        "T05",
+        "T06",
+        "T08"
+      ],
+      "status": "not_started"
+    },
+    {
+      "id": "T10",
+      "capability": "review",
+      "title": "Review and approve outputs",
+      "purpose": "Require a human decision before publication.",
+      "depends_on": [
+        "T09"
+      ],
+      "status": "not_started"
+    },
+    {
+      "id": "T11",
+      "capability": "publish",
+      "title": "Publish local artifacts",
+      "purpose": "Write approved outputs under the local project folder.",
+      "depends_on": [
+        "T10"
+      ],
+      "status": "not_started"
+    }
+  ],
+  "assumptions": [
+    "Rule-based planning is heuristic; review its capability selection."
+  ],
+  "warnings": [
+    "Stage 1 creates and reviews a plan only; document processing is not implemented yet.",
+    "External LLM calls are not implemented. Ollama mode uses local loopback only."
+  ],
+  "external_inference": {
+    "enabled": false,
+    "policy": "explicit_approval_required"
+  },
+  "requires_human_approval": true,
+  "status": "draft",
+  "plan_sha256": "80f18207b21acb5b399825175c68ebb5bcfa7aaab5e74814e54ece4aacb95abb"
+}

@@ -1,0 +1,9 @@
+[project]
+name = "document-agent-stage1"
+version = "0.1.0"
+description = "Offline-first context-driven documentation execution planner"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.setuptools]
+packages = ["engine"]

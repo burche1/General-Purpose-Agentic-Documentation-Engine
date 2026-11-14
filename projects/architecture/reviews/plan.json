@@ -1,0 +1,162 @@
+{
+  "schema_version": "1.0",
+  "project": "Embedded Software Architecture Consolidation",
+  "context_file": "context.md",
+  "context_sha256": "aae5fa60b6a583a814d3a15b84d514b41f6310f169019243af2d7b945beb4815",
+  "planner": {
+    "mode": "rules",
+    "model": null
+  },
+  "objective": "Create one coherent embedded software architecture specification from several overlapping technical notes. Resolve duplicated explanations, identify contradictions, and clearly flag undecided design choices.",
+  "scope": [
+    "Boot sequence, drivers, middleware and application modules.",
+    "Preserve unresolved interface questions and alternatives."
+  ],
+  "source_roles": {
+    "inputs": "Current/project documents",
+    "references": "Reference and normative material",
+    "templates": "Optional output layouts"
+  },
+  "requested_deliverables": [
+    "Unified architecture specification (Markdown).",
+    "Conflicting statements and open questions (Markdown)."
+  ],
+  "quality_criteria": [
+    "Preserve links to source notes.",
+    "Flag uncertain design choices rather than inventing decisions."
+  ],
+  "constraints": [
+    "Everything stored locally.",
+    "Do not overwrite the source notes."
+  ],
+  "tasks": [
+    {
+      "id": "T01",
+      "capability": "inventory",
+      "title": "Inventory documents",
+      "purpose": "Identify sources, document roles, and versions.",
+      "depends_on": [],
+      "status": "not_started"
+    },
+    {
+      "id": "T02",
+      "capability": "extract",
+      "title": "Extract document content",
+      "purpose": "Parse and normalize source content and source locations.",
+      "depends_on": [
+        "T01"
+      ],
+      "status": "not_started"
+    },
+    {
+      "id": "T03",
+      "capability": "retrieve",
+      "title": "Build local retrieval index",
+      "purpose": "Enable exact and semantic retrieval over local sources.",
+      "depends_on": [
+        "T02"
+      ],
+      "status": "not_started"
+    },
+    {
+      "id": "T04",
+      "capability": "analyze",
+      "title": "Analyze documents",
+      "purpose": "Identify concepts, structures, responsibilities, and findings.",
+      "depends_on": [
+        "T02"
+      ],
+      "status": "not_started"
+    },
+    {
+      "id": "T05",
+      "capability": "compare",
+      "title": "Compare documents and references",
+      "purpose": "Map evidence, differences, and contradictions.",
+      "depends_on": [
+        "T03",
+        "T04"
+      ],
+      "status": "not_started"
+    },
+    {
+      "id": "T06",
+      "capability": "consolidate",
+      "title": "Consolidate information",
+      "purpose": "Merge overlapping material while tracking its provenance.",
+      "depends_on": [
+        "T04"
+      ],
+      "status": "not_started"
+    },
+    {
+      "id": "T07",
+      "capability": "design",
+      "title": "Design document structure",
+      "purpose": "Define the proposed outline and document interfaces.",
+      "depends_on": [
+        "T04",
+        "T05",
+        "T06"
+      ],
+      "status": "not_started"
+    },
+    {
+      "id": "T08",
+      "capability": "generate",
+      "title": "Generate document drafts",
+      "purpose": "Produce output drafts from approved sources and structure.",
+      "depends_on": [
+        "T07"
+      ],
+      "status": "not_started"
+    },
+    {
+      "id": "T09",
+      "capability": "validate",
+      "title": "Validate outputs",
+      "purpose": "Verify source support and stated quality criteria.",
+      "depends_on": [
+        "T04",
+        "T05",
+        "T06",
+        "T08"
+      ],
+      "status": "not_started"
+    },
+    {
+      "id": "T10",
+      "capability": "review",
+      "title": "Review and approve outputs",
+      "purpose": "Require a human decision before publication.",
+      "depends_on": [
+        "T09"
+      ],
+      "status": "not_started"
+    },
+    {
+      "id": "T11",
+      "capability": "publish",
+      "title": "Publish local artifacts",
+      "purpose": "Write approved outputs under the local project folder.",
+      "depends_on": [
+        "T10"
+      ],
+      "status": "not_started"
+    }
+  ],
+  "assumptions": [
+    "Rule-based planning is heuristic; review its capability selection."
+  ],
+  "warnings": [
+    "Stage 1 creates and reviews a plan only; document processing is not implemented yet.",
+    "External LLM calls are not implemented. Ollama mode uses local loopback only."
+  ],
+  "external_inference": {
+    "enabled": false,
+    "policy": "explicit_approval_required"
+  },
+  "requires_human_approval": true,
+  "status": "draft",
+  "plan_sha256": "ce90114cff24e16de696a26d63bd17f867b6acbafac70b4426161d24409760da"
+}
