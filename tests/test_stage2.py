@@ -463,3 +463,232 @@ class StageFourTests(unittest.TestCase):
             with self.assertRaisesRegex(RemoteApprovalError, 'overwrite'):
                 run_stage3(self.project, llm='openai', model='gpt-mini')
             mocked.assert_not_called()
+
+
+class StageFiveTests(unittest.TestCase):
+    """Stage 5 regression: exhaustive batching, privacy and resumability."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.project = Path(self.temp.name) / 'project'
+        self.project.mkdir()
+        (self.project / 'inputs').mkdir()
+        (self.project / 'references').mkdir()
+        (self.project / 'context.md').write_text(
+            '# Engineering Documentation\n\n## Objective\nCompare against reference requirements '
+            'and generate improved documentation.\n\n## Tasks\n- Analyze all supplied materials\n'
+            '- Compare existing with references\n- Generate updated process descriptions\n',
+            encoding='utf-8',
+        )
+        ctx = parse_context(self.project)
+        save_draft(ctx, plan_project(ctx))
+        record_decision(ctx, approved=True)
+
+    def sources(self):
+        (self.project / 'references' / 'standard.md').write_text(
+            '# Normative reference\n\n' + ('REQUIREMENT traceability verification.\n' * 75),
+            encoding='utf-8',
+        )
+        (self.project / 'inputs' / 'current.md').write_text(
+            '# Current procedures\n\n' + ('Current requirements review via DOORS.\n' * 60),
+            encoding='utf-8',
+        )
+        ingest_project(self.project)
+
+    def test_all_chunks_preserved_and_references_first(self):
+        from engine.store import full_evidence_batches, connect
+        self.sources()
+        ctx = parse_context(self.project)
+        batches, stats = full_evidence_batches(ctx, batch_chars=1100)
+        self.assertGreater(len(batches), 2)
+        self.assertEqual(batches[0][0].source_role, 'references')
+        first_input = next(i for i, batch in enumerate(batches) if batch[0].source_role == 'inputs')
+        self.assertTrue(all(b[0].source_role == 'references' for b in batches[:first_input]))
+        with connect(self.project) as con:
+            original = con.execute('''SELECT d.relative_path, c.ordinal, c.content
+                                     FROM chunks c JOIN documents d ON d.id=c.document_id
+                                     ORDER BY d.relative_path,c.ordinal''').fetchall()
+        by_chunk = {}
+        for batch in batches:
+            self.assertLessEqual(sum(len(__import__('engine.store', fromlist=['evidence_display']).evidence_display(e)) for e in batch), 1100)
+            for e in batch:
+                key = (e.relative_path, int(e.locator.split('[chunk ')[1].split(',')[0]))
+                by_chunk.setdefault(key, []).append(e.content)
+        for row in original:
+            self.assertEqual(''.join(by_chunk[(row['relative_path'], row['ordinal'])]), row['content'])
+        self.assertEqual(stats['indexed_chunks'], len(original))
+        self.assertTrue(stats['all_indexed_text_prepared'])
+
+    def test_full_plan_is_read_only_and_requires_approved_sources(self):
+        from engine.ingest import full_plan
+        self.sources()
+        result = full_plan(self.project, batch_chars=1400)
+        self.assertEqual(result['reference_documents'], 1)
+        self.assertGreater(result['batches_required'], 1)
+        self.assertFalse((self.project / 'outputs').exists())
+        self.assertTrue(result['no_llm_call'])
+
+    def test_full_deterministic_resume_and_review(self):
+        from engine.ingest import run_full, full_status
+        from engine.review import review_generated_draft
+        self.sources()
+        first = run_full(self.project, llm='none', model='none', batch_chars=1400, batch_limit=1)
+        self.assertEqual(first['status'], 'in_progress')
+        draft_id = first['run_id']
+        progress = full_status(self.project, draft_id)
+        self.assertEqual(progress['saved_batch_records'], 1)
+        final = run_full(self.project, llm='none', model='none', batch_chars=1400,
+                         batch_limit=999, resume_draft=draft_id)
+        self.assertEqual(final['status'], 'draft_for_review')
+        folder = Path(final['output_dir'])
+        self.assertTrue((folder / 'manifest.json').exists())
+        manifest = json.loads((folder / 'manifest.json').read_text(encoding='utf-8'))
+        self.assertEqual(manifest['evidence_selection']['omitted_chunks'], 0)
+        self.assertFalse(manifest['evidence_selection']['model_input_coverage_complete'])
+        self.assertEqual(manifest['evidence_selection']['processed_source_characters'],
+                         manifest['evidence_selection']['indexed_source_characters'])
+        review = review_generated_draft(self.project, draft_id)
+        self.assertTrue(review['document_checks_passed'])
+        self.assertTrue(review['source_coverage_complete'])
+        self.assertFalse(review['model_input_coverage_complete'])
+
+    def test_local_model_must_receive_all_segments_and_can_resume(self):
+        from engine.ingest import run_full
+        self.sources()
+        def fake_model(ctx, evidence, model):
+            ids = [e.id for e in evidence]
+            return ([{'kind': 'observation', 'text': 'Source evidence was examined.',
+                      'evidence_ids': [ids[0]]}], [],
+                    {'provider': 'local_ollama', 'model': model,
+                     'evidence_ids_supplied': ids})
+        with patch('engine.ingest.interpret_locally', side_effect=fake_model):
+            first = run_full(self.project, llm='ollama', model='qwen2.5:1.5b',
+                             batch_chars=1500, batch_limit=2)
+            finished = run_full(self.project, llm='ollama', model='qwen2.5:1.5b',
+                                batch_chars=1500, batch_limit=999,
+                                resume_draft=first['run_id'])
+        self.assertEqual(finished['status'], 'draft_for_review')
+        manifest = json.loads((Path(finished['output_dir']) / 'manifest.json').read_text(encoding='utf-8'))
+        self.assertTrue(manifest['evidence_selection']['model_input_coverage_complete'])
+        self.assertEqual(manifest['evidence_selection']['reference_batches'],
+                         sum(1 for row in json.loads((Path(finished['output_dir'])/'source_coverage.json').read_text())['batch_deliveries']
+                             if row['role'] == 'references'))
+
+    def test_local_model_partial_response_does_not_claim_coverage(self):
+        from engine.ingest import run_full, Stage3Error
+        self.sources()
+        with patch('engine.ingest.interpret_locally', return_value=([], [],
+             {'provider': 'local_ollama', 'evidence_ids_supplied': []})):
+            with self.assertRaisesRegex(Stage3Error, 'lost evidence'):
+                run_full(self.project, llm='ollama', model='qwen2.5:1.5b',
+                         batch_chars=1500, batch_limit=1)
+        folder = next((self.project / 'outputs' / 'stage3').iterdir())
+        self.assertEqual(list((folder/'.batches').glob('batch-*.json')), [])
+        self.assertFalse((folder/'manifest.json').exists())
+
+    def test_changed_source_disallows_resume(self):
+        from engine.ingest import run_full
+        self.sources()
+        first = run_full(self.project, llm='none', model='none', batch_chars=1300, batch_limit=0)
+        (self.project / 'inputs' / 'current.md').write_text('Now changed!', encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'modified since indexing'):
+            run_full(self.project, llm='none', model='none', batch_chars=1300,
+                     batch_limit=1, resume_draft=first['run_id'])
+
+    def test_full_remote_preview_no_network_and_exact_window(self):
+        from engine.ingest import run_full, full_api_preview, full_api_approve
+        self.sources()
+        first = run_full(self.project, llm='openai', model='gpt-mini', batch_chars=1300, batch_limit=0)
+        with patch('engine.ollama.build_opener', side_effect=AssertionError('network should not run')):
+            preview = full_api_preview(self.project, draft_id=first['run_id'], model='gpt-mini',
+                                       batch_chars=1300, max_batches=2)
+            self.assertEqual(preview['requests'], 2)
+            self.assertTrue(Path(preview['review_manifest']).is_file())
+            approved = full_api_approve(self.project, draft_id=first['run_id'], model='gpt-mini',
+                                        digest=preview['window_sha256'],
+                                        batch_chars=1300, max_batches=2)
+        self.assertEqual(approved['requests_authorized_once'], 2)
+        for request_path in preview['request_previews']:
+            request = json.loads(Path(request_path).read_text(encoding='utf-8'))['request']
+            self.assertFalse(request['store'])
+            self.assertIn('SOURCE EVIDENCE', request['input'])
+
+    def test_unsupported_source_flagged_even_if_all_indexed_text_done(self):
+        from engine.ingest import run_full
+        self.sources()
+        (self.project / 'references' / 'image.unknownformat').write_bytes(b'x')
+        finished = run_full(self.project, llm='none', model='none', batch_chars=1200, batch_limit=999)
+        manifest = json.loads((Path(finished['output_dir'])/'manifest.json').read_text())
+        self.assertFalse(manifest['evidence_selection']['coverage_complete'])
+        self.assertTrue(manifest['evidence_selection']['unindexed_paths'])
+
+    def test_full_remote_requests_are_single_use_and_resumable(self):
+        from engine.ingest import run_full, full_api_preview, full_api_approve
+        import io
+        import os
+        self.sources()
+        first = run_full(self.project, llm='openai', model='gpt-mini', batch_chars=1300, batch_limit=0)
+        preview = full_api_preview(self.project, draft_id=first['run_id'], model='gpt-mini',
+                                   batch_chars=1300, max_batches=2)
+        full_api_approve(self.project, draft_id=first['run_id'], model='gpt-mini',
+                         digest=preview['window_sha256'], batch_chars=1300, max_batches=2)
+        response = {'status': 'completed', 'output': [{'type': 'message',
+                    'content': [{'type': 'output_text', 'text': json.dumps({
+                        'findings': [], 'draft_sections': []})}]}],
+                    'usage': {'input_tokens': 190, 'output_tokens': 20}}
+        requests = []
+        class FakeOpener:
+            def open(self, request, timeout=None):
+                requests.append(request)
+                return io.BytesIO(json.dumps(response).encode('utf-8'))
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}), \
+             patch('engine.ollama.build_opener', return_value=FakeOpener()):
+            result = run_full(self.project, llm='openai', model='gpt-mini',
+                              batch_chars=1300, batch_limit=2,
+                              resume_draft=first['run_id'])
+        self.assertEqual(result['completed_batches'], 2)
+        self.assertEqual(len(requests), 2)
+        self.assertTrue(all(request.full_url == 'https://api.openai.com/v1/responses' for request in requests))
+        self.assertTrue(all(json.loads(request.data)['store'] is False for request in requests))
+        # Attempt #3 was never approved and must fail before making another network call.
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}), \
+             patch('engine.ollama.build_opener') as network:
+            with self.assertRaisesRegex(ValueError, 'paused at batch 3'):
+                run_full(self.project, llm='openai', model='gpt-mini',
+                         batch_chars=1300, batch_limit=1,
+                         resume_draft=first['run_id'])
+            network.assert_not_called()
+
+    def test_full_run_cli_integration(self):
+        self.sources()
+        self.assertEqual(main(['--project', str(self.project), '--full-plan',
+                               '--llm', 'none', '--batch-chars', '1200']), 0)
+        self.assertEqual(main(['--project', str(self.project), '--run-full',
+                               '--llm', 'none', '--model', 'none', '--batch-chars', '1200',
+                               '--batch-limit', '100000']), 0)
+        folders = list((self.project / 'outputs' / 'stage3').iterdir())
+        self.assertEqual(len(folders), 1)
+        self.assertRegex(folders[0].name, r'^draft-\d\d-\d\d-\d{4}-\d\d-\d\d-\d\d')
+        self.assertEqual(main(['--project', str(self.project), '--review-draft',
+                               '--draft-id', folders[0].name]), 0)
+
+    def test_large_remote_window_contains_every_source_segment(self):
+        from engine.ingest import run_full, full_api_preview, full_api_approve
+        from engine.store import full_evidence_batches
+        self.sources()
+        first = run_full(self.project, llm='openai', model='gpt-mini',
+                         batch_chars=12000, batch_limit=0)
+        ctx = parse_context(self.project)
+        batches, stats = full_evidence_batches(ctx, batch_chars=12000)
+        preview = full_api_preview(self.project, draft_id=first['run_id'],
+                                   model='gpt-mini', batch_chars=12000, max_batches=1)
+        request = json.loads(Path(preview['request_previews'][0]).read_text())['request']
+        for segment in batches[0]:
+            self.assertIn(segment.id, request['input'])
+            self.assertIn(segment.content, request['input'])
+        self.assertEqual(request['max_output_tokens'], 6000)
+        approval = full_api_approve(self.project, draft_id=first['run_id'],
+                                    model='gpt-mini', digest=preview['window_sha256'],
+                                    batch_chars=12000, max_batches=1)
+        self.assertEqual(approval['requests_authorized_once'], 1)

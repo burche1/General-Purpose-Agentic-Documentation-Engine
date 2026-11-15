@@ -7,7 +7,8 @@ from pathlib import Path
 import sys
 
 from engine.context import parse_context
-from engine.ingest import ingest_project, run_stage3
+from engine.ingest import (ingest_project, run_stage3, full_plan, full_status,
+                           run_full, full_api_preview, full_api_approve)
 from engine.planner import plan_project
 from engine.review import (get_status, record_decision, save_draft, review_generated_draft,
                            decide_generated_draft, publish_generated_draft)
@@ -26,6 +27,11 @@ def main(argv: list[str] | None = None) -> int:
     action.add_argument("--search", metavar="TEXT", help="Search indexed content")
     action.add_argument("--check", action="store_true", help="Check if approved plan and indexed evidence are ready for Stage 3")
     action.add_argument("--run", action="store_true", help="Generate a local draft")
+    action.add_argument("--full-plan", action="store_true", help="Estimate exhaustive reference-first batches, no inference")
+    action.add_argument("--run-full", action="store_true", help="Run or resume full collection analysis in batches")
+    action.add_argument("--full-status", action="store_true", help="Inspect progress of a Stage 5 draft")
+    action.add_argument("--preview-full-api", action="store_true", help="Preview next remote batch window; no API call")
+    action.add_argument("--approve-full-api", metavar="WINDOW_SHA256", help="Approve next exact API batch window")
     action.add_argument("--preview-api", action="store_true", help="Save exact OpenAI request locally for approval; does not call API")
     action.add_argument("--approve-api", metavar="REQUEST_SHA256", help="Approve one exact previewed API payload and model")
     action.add_argument("--review-draft", action="store_true", help="Validate a generated draft and report limitations")
@@ -34,6 +40,11 @@ def main(argv: list[str] | None = None) -> int:
     action.add_argument("--publish-draft", action="store_true", help="Copy an approved draft into local approved outputs")
     parser.add_argument("--llm", choices=["none", "ollama", "openai"], default="ollama",
                         help="Inference backend; local Ollama is default. OpenAI requires exact payload approval")
+    parser.add_argument("--resume-draft", help="Resume a Stage 5 draft or inspect its API batch window")
+    parser.add_argument("--batch-chars", type=int, default=1800,
+                        help="Maximum source evidence characters per batch including source locations (default 1800)")
+    parser.add_argument("--batch-limit", type=int, default=8,
+                        help="Maximum batches executed per invocation; zero creates a resumable run")
     parser.add_argument("--draft-id", help="Generated run folder name to review/approve/publish (defaults to latest)")
     parser.add_argument("--allow-partial", action="store_true", help="Explicitly acknowledge incomplete source selection on approval")
     parser.add_argument("--max-evidence", type=int, default=40,
@@ -73,6 +84,38 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.publish_draft:
             result = publish_generated_draft(ctx.project_dir, args.draft_id)
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0
+        if args.full_plan:
+            result = full_plan(ctx.project_dir, batch_chars=args.batch_chars, llm=args.llm,
+                               model=args.model or ("gpt-5.4-mini" if args.llm == "openai" else "qwen2.5:1.5b"))
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0
+        if args.full_status:
+            if not args.resume_draft:
+                raise ValueError('--full-status requires --resume-draft')
+            print(json.dumps(full_status(ctx.project_dir, args.resume_draft), indent=2, ensure_ascii=False))
+            return 0
+        if args.run_full:
+            result = run_full(ctx.project_dir, llm=args.llm,
+                              model=args.model or ("gpt-5.4-mini" if args.llm == "openai" else "qwen2.5:1.5b"),
+                              batch_chars=args.batch_chars, batch_limit=args.batch_limit,
+                              resume_draft=args.resume_draft)
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0
+        if args.preview_full_api or args.approve_full_api:
+            if args.llm != 'openai' or not args.resume_draft:
+                raise ValueError('Full OpenAI preview/approval requires --llm openai and --resume-draft')
+            model = args.model or 'gpt-5.4-mini'
+            if args.preview_full_api:
+                result = full_api_preview(ctx.project_dir, draft_id=args.resume_draft,
+                                          model=model, batch_chars=args.batch_chars,
+                                          max_batches=args.batch_limit)
+            else:
+                result = full_api_approve(ctx.project_dir, draft_id=args.resume_draft,
+                                          model=model, digest=args.approve_full_api,
+                                          batch_chars=args.batch_chars,
+                                          max_batches=args.batch_limit)
             print(json.dumps(result, indent=2, ensure_ascii=False))
             return 0
         if args.run or args.check or args.preview_api or args.approve_api:

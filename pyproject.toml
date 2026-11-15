@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "document-agent"
-version = "0.4.0"
-description = "Local-first context-driven document planning, retrieval, drafting and review"
+version = "0.5.0"
+description = "Local-first context-driven document planning, retrieval, drafting, full-collection analysis and review"
 requires-python = ">=3.10"
 dependencies = [
   "PyMuPDF>=1.24,<2",
