@@ -264,3 +264,90 @@ def select_evidence(ctx: ProjectContext, max_evidence: int = 40) -> tuple[list[E
         'coverage_complete': len(raw) == len(evidence) and not skipped,
     }
     return evidence, stats
+
+# Stage 5 — exhaustive reference-first source traversal; never samples indexed chunks.
+def evidence_display(item: Evidence) -> str:
+    return f"{item.id} | {item.source_role}/{item.relative_path} @ {item.locator}\n{item.content}\n"
+
+
+def full_evidence_batches(ctx: ProjectContext, *, batch_chars: int = 1800) -> tuple[list[list[Evidence]], dict]:
+    """Create lossless model-sized batches of all indexed source text.
+
+    Document role and source order are preserved. No source text is discarded.
+    A *complete* model analysis is only claimed after every batch succeeds.
+    """
+    if not 600 <= batch_chars <= 24000:
+        raise ValueError('--batch-chars must be between 600 and 24000')
+    documents = check_fresh_index(ctx)
+    with connect(ctx.project_dir) as con:
+        rows = con.execute("""
+            SELECT d.relative_path, d.source_role, d.content_sha256,
+                   c.ordinal, c.locator, c.kind, c.content
+            FROM chunks c JOIN documents d ON c.document_id=d.id
+            ORDER BY CASE d.source_role WHEN 'references' THEN 0 ELSE 1 END,
+                     d.relative_path, c.ordinal
+        """).fetchall()
+    batches: list[list[Evidence]] = []
+    current: list[Evidence] = []
+    current_len = 0
+    last_source: str | None = None
+    total_chars = 0
+    segment_count = 0
+    doc_stats: dict[str, dict] = {
+        d['relative_path']: {'role': d['source_role'], 'indexed_chunks': d['chunks'],
+                              'segments': 0, 'characters': 0} for d in documents
+    }
+    for row in rows:
+        item = dict(row)
+        content = item['content']
+        total_chars += len(content)
+        path = item['relative_path']
+        start = 0
+        while start < len(content):
+            next_id = f'E{segment_count + 1:06d}'
+            locator_prefix = f"{item['locator']} [chunk {item['ordinal']}, chars {start + 1}-"
+            overhead = len(next_id) + 4 + len(item['source_role']) + len(path) + len(locator_prefix) + 35
+            space = batch_chars - overhead
+            if space < 1:
+                raise ValueError('Source path/locator is too long for --batch-chars; increase the budget')
+            end = min(len(content), start + min(900, space))
+            segment = Evidence(
+                id=next_id, source_role=item['source_role'], relative_path=path,
+                locator=f"{item['locator']} [chunk {item['ordinal']}, chars {start + 1}-{end}]",
+                kind=item['kind'], content=content[start:end],
+                document_sha256=item['content_sha256'], relevance=0,
+            )
+            display_len = len(evidence_display(segment))
+            if display_len > batch_chars:
+                raise AssertionError('Evidence splitter exceeded batch budget')
+            if current and (current_len + display_len > batch_chars or last_source != path):
+                batches.append(current)
+                current = []
+                current_len = 0
+            current.append(segment)
+            current_len += display_len
+            last_source = path
+            segment_count += 1
+            doc_stats[path]['segments'] += 1
+            doc_stats[path]['characters'] += len(segment.content)
+            start = end
+    if current:
+        batches.append(current)
+    if sum(len(e.content) for batch in batches for e in batch) != total_chars:
+        raise AssertionError('Source text coverage invariant failed')
+    skipped = find_skipped_paths(ctx.project_dir)
+    stats = {
+        'indexed_documents': len(documents),
+        'indexed_chunks': len(rows),
+        'indexed_source_characters': total_chars,
+        'prepared_segments': segment_count,
+        'total_batches': len(batches),
+        'reference_documents': sum(1 for d in documents if d['source_role'] == 'references'),
+        'input_documents': sum(1 for d in documents if d['source_role'] == 'inputs'),
+        'reference_batches': sum(1 for b in batches if b[0].source_role == 'references'),
+        'unindexed_paths': skipped,
+        'documents': doc_stats,
+        'selection_policy': 'Exhaustive indexed text, document by document; references first; no chunk limit',
+        'all_indexed_text_prepared': True,
+    }
+    return batches, stats

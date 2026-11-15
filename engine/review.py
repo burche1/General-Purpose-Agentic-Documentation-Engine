@@ -202,6 +202,28 @@ def _quality_assessment(project_dir: Path, draft_id: str | None) -> tuple[Path, 
                         f"{selection.get('omitted_chunks', 0)} omitted. Not exhaustive.")
     if selection.get('unindexed_paths'):
         warnings.append('Unsupported/unindexed paths: ' + ', '.join(selection['unindexed_paths'][:10]))
+    if manifest.get('stage') == 5:
+        # Stage 5 separates full indexed-text traversal from successful model delivery.
+        model_input_complete = bool(selection.get('model_input_coverage_complete', False))
+        if not model_input_complete:
+            warnings.append('Full indexed-text traversal did not deliver all source text to an LLM (e.g. deterministic mode).')
+        if selection.get('reference_documents', 0) == 0:
+            warnings.append('No authoritative references indexed; reference-based comparisons are not established')
+        try:
+            report_file = folder / 'source_coverage.json'
+            if report_file.is_symlink():
+                raise ValueError('Coverage report is symlinked')
+            detailed = json.loads(report_file.read_text(encoding='utf-8'))
+            metrics = detailed['source_stats']
+            if (metrics.get('indexed_chunks') != selection.get('indexed_chunks') or
+                    metrics.get('indexed_source_characters') != selection.get('indexed_source_characters') or
+                    len(detailed['batch_deliveries']) != selection.get('processed_batches')):
+                blockers.append('Detailed Stage 5 coverage report disagrees with manifest')
+            if not isinstance(detailed.get('batch_deliveries'), list):
+                blockers.append('Invalid Stage 5 batch delivery report')
+        except (OSError, ValueError, TypeError, KeyError) as e:
+            blockers.append('Cannot validate full analysis coverage: ' + str(e))
+        warnings.append('Source text passed through bounded batches; full semantic entailment and cross-source comparison are not established.')
     if not found_citations:
         warnings.append('No evidence citations found in generated Markdown')
     if not any(str(e.get('relative_path', '')).startswith('inputs/') for e in evidence if isinstance(e, dict)):
@@ -218,6 +240,7 @@ def _quality_assessment(project_dir: Path, draft_id: str | None) -> tuple[Path, 
         'blockers': sorted(set(blockers)),
         'warnings': sorted(set(warnings)),
         'source_coverage_complete': not partial,
+        'model_input_coverage_complete': selection.get('model_input_coverage_complete') if manifest.get('stage') == 5 else None,
         'selected_chunks': selection.get('selected_chunks'),
         'indexed_chunks': selection.get('indexed_chunks'),
         'quality_criteria_for_manual_review': quality_criteria,

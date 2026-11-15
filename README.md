@@ -1,200 +1,174 @@
-# Document Engineering Agent — v0.4 (Stages 1–4)
+# Document Engineering Agent — v0.5 (Stages 1–5)
 
-A local-first, context-driven documentation engine. **One application** (`main.py`), **one README**, and the same project folders across stages. Stage 4 adds independent deterministic checks, human approval, immutable publication copies and optional explicitly approved OpenAI inference. Source documents and indexes remain local.
+A **local-first, context-driven documentation engine** with one entry point (`main.py`) and one README. It ingests PDF/DOCX/Markdown and other supported documents into local SQLite, plans work from `context.md`, drafts local documentation, and requires human review for release. Stage 5 adds **lossless, reference-first, multi-batch analysis of the complete indexed collection**, with resumable execution.
 
-> **Status:** this is an exploratory documentation engineering tool, **not** an ASPICE compliance assessor. Validation checks file integrity, source identifiers and staleness; only human reviewers can establish whether claims are supported, current, complete and correct. The software does not use LangGraph yet.
+> **Important:** This remains a prototype, **not an ASPICE compliance assessor**. Even when all indexed source text has been delivered to a model, its findings are not automatically correct. Stage 5 does not yet perform rigorous reference-to-company requirement adjudication or semantic entailment verification. The application is a deterministic Python workflow, **not yet a LangGraph runtime**.
 
-## Updating an existing Stage 3 installation
+## Upgrade existing Stage 4 in place
 
-Back up your work, then extract the **in-place Stage 4 update** from the root folder containing `main.py`:
+From the same Git working folder as `main.py`:
 
 ```bash
 cd ~/Documents/General-Purpose-Agentic-Documentation-Engine
-unzip -o ~/Downloads/document_agent_stage4_in_place_update.zip -d .
+# Recommended: commit or back up your current work first.
+unzip -o ~/Downloads/document_agent_stage5_in_place_update.zip -d .
 source .venv/bin/activate
 python -m pip install -e .
 python -m unittest discover -s tests -v
 ```
 
-This update modifies existing application files only. It does not delete or ship project documents, `context.md`, stored indexes, previous run folders, or your `.env` file. It does **not** contain extra launch scripts or separate guides. Previous Stage 3 run directories can still be reviewed.
+The update replaces existing application files only. There is no separate Stage 5 launcher, extra guide, deleted code, or bundled company material. Existing project folders, `context.md`, `.env`, `.local/` indexes, plan approvals, and generated outputs remain untouched. An installed venv is reused.
 
-If you prefer not to create a backup README in the project, back it up outside this folder.
-
-## Project directory
+## Project organization
 
 ```text
 projects/aspice/
-  context.md           # Project objectives and quality criteria
-  inputs/              # Current organizational material
-  references/          # Normative/source references
-  reviews/             # Approved execution plan
-  .local/              # SQLite index, ingestion metadata and API consent (Git ignored)
+  context.md                     # Objectives and quality rules
+  references/                    # Authoritative normative sources, e.g. ASPICE 4.1
+  inputs/                        # Current company processes (nested folders allowed)
+  reviews/                       # Plan and approval
+  .local/                        # SQLite index and local external-API previews
   outputs/
-    stage3/draft-dd-mm-yyyy-hh-mm-ss/  # Unapproved new drafts
-    approved/approved-dd-mm-yyyy-hh-mm-ss/  # Human-reviewed release copies
+    stage3/
+      draft-dd-mm-yyyy-hh-mm-ss/ # Old Stage 3/4 drafts and new Stage 5 run folders
+         progress.json           # Stage 5 resumable state
+         .batches/              # Completed model calls stored locally
+         ...                     # Final files written only after all batches succeed
+    approved/                    # Separate human-reviewed publication copies
 ```
 
-## Stage 1 — plan from context.md alone
+Keep `references/` distinct from `inputs/`. Stage 5 analyzes **references first**, then all input documents, maintaining source locations and document hashes.
+
+## Stages 1–4 (unchanged commands)
 
 ```bash
-python main.py --project projects/aspice
-cat projects/aspice/reviews/plan.md
-python main.py --project projects/aspice --approve
+python main.py --project projects/aspice                      # Plan from context.md
+python main.py --project projects/aspice --approve            # Approve plan
+python main.py --project projects/aspice --ingest             # Local incremental index
+python main.py --project projects/aspice --search requirements
+python main.py --project projects/aspice --check              # Stage 3 sampler check
+python main.py --project projects/aspice --run --llm ollama   # Old exploratory mode
 ```
 
-If `context.md` changes, create and approve a new plan. Approving a Stage 1 **plan** does not approve Stage 4 **document outputs**.
+Stage 3 `--run` retains its previous sampled 40-chunk behavior to preserve backwards compatibility. **Use `--run-full` for Stage 5.**
 
-## Stage 2 — ingest & search locally
+## Stage 5: see how much work the full collection requires
 
 ```bash
-python main.py --project projects/aspice --ingest
-python main.py --project projects/aspice --list-docs
-python main.py --project projects/aspice --search 'requirements'
+python main.py --project projects/aspice --full-plan --llm ollama --model qwen2.5:1.5b
 ```
 
-PDF, DOCX, Markdown, TXT, HTML, CSV, XLSX and PPTX extraction stays local. Scanned-only PDFs/complex diagrams may need manual extraction. Indexing is incremental on unchanged file hashes. Modified or additional documents require `--ingest` before generating and approving drafts.
+No model call and no draft are created. The result includes indexed documents, chunks, source characters, reference batches, total batches, and an approximate input-token range (not a cost guarantee). **There is no arbitrary 40-chunk cap in this mode.**
 
-## Stage 3 — generate a draft
+Data is split into small, lossless segments with evidence IDs and original source locators, placed into bounded batches one document at a time. Larger chunks are split into contiguous character ranges, never truncated. Every indexed source passage is prepared, and reference documents are always first. Unsupported and unindexed sources are explicitly reported.
 
-Local Ollama is the **default LLM provider** for `--run`, and does not make cloud calls:
+**All docs can require many inference calls.** On a CPU-only laptop, use limited batches and resume deliberately. Stage 5 does not schedule work in the background.
+
+### Local Ollama run — default
 
 ```bash
-python main.py --project projects/aspice --check
-python main.py --project projects/aspice --run --llm ollama --model qwen2.5:1.5b
+python main.py --project projects/aspice --run-full \
+  --llm ollama --model qwen2.5:1.5b --batch-limit 8
 ```
 
-Without any LLM:
+The response includes the new draft folder name, e.g. `draft-14-11-2026-18-32-21`, and completion counts. This run will typically remain `in_progress` after the first 8 batches.
+
+To continue **the same run**:
 
 ```bash
-python main.py --project projects/aspice --run --llm none
+python main.py --project projects/aspice --run-full \
+  --llm ollama --model qwen2.5:1.5b \
+  --resume-draft draft-14-11-2026-18-32-21 --batch-limit 8
 ```
 
-For a somewhat wider deterministic source sample (not an exhaustive analysis):
+Check status at any time:
 
 ```bash
-python main.py --project projects/aspice --run --llm none --max-evidence 200
+python main.py --project projects/aspice --full-status \
+  --resume-draft draft-14-11-2026-18-32-21
 ```
 
-The output uses your computer's local time, e.g. `draft-14-11-2026-17-30-20`. A `-02` suffix is added if two runs begin in the same second. Older run names remain reviewable. Each run contains `draft.md`, analysis, evidence, validation, and a manifest; no original source files are overwritten.
+The default `--batch-chars 1800` fits the small Qwen2.5 local context and its JSON retry budget. Ollama mode refuses values above 1900 because the legacy retry logic could otherwise omit source segments. If the LLM fails, progress from already completed batches remains on disk; no external fallback is used. Do not alter indexed sources, plan, inference model, or batch-size settings during a run. A change blocks resumption.
 
-**Coverage caveat:** selecting 40 of 438 indexed chunks is not a full document analysis. Even when source selection is complete, the Ollama prompt may include only a smaller bounded sample. Never interpret a valid citation or generated prose as a verified normative interpretation.
-
-## Stage 4 — validate, approve, and publish
-
-Use a specific draft ID returned by Stage 3, or omit `--draft-id` for the latest run:
+To finish without calling an LLM (source traversal and deterministic audit only):
 
 ```bash
-python main.py --project projects/aspice --review-draft \
-    --draft-id draft-14-11-2026-17-30-20
+python main.py --project projects/aspice --run-full --llm none \
+  --model none --batch-limit 100000
 ```
 
-Read `quality_report.md` inside the draft folder. It verifies source hashes, approved context/plan, references, basic output integrity and source coverage; it lists quality criteria for *manual* inspection.
+This will mark indexed text as traversed, **not** model-analyzed. The coverage report distinguishes these states.
 
-**For a complete evidence selection**, after examining the full source material and all claims:
+### OpenAI full runs — explicit reviewed batch windows
+
+**Never use company-confidential files with a remote model unless authorized.** OpenAI calls transmit selected exact source passages; local file storage does not prevent transmission. The application sends `store: false`, but this is not a zero-retention guarantee. It performs no remote file uploads or hosted indexing.
+
+1. Save `OPENAI_API_KEY=...` in a Git-ignored `.env` (file permission `chmod 600 .env`); then `set -a; source .env; set +a` in the current terminal. Do not share or commit the key.
+2. Estimate complete processing with `--full-plan --llm openai --model gpt-mini --batch-chars 12000`. Unlike local Ollama, the API backend supports up to 24,000 source-evidence characters per batch, reducing the number of requests. Use the **same** batch-size value for creation, preview, approval and execution.
+3. Create a **resumable full run without sending data**:
 
 ```bash
-python main.py --project projects/aspice --approve-draft \
-    --draft-id draft-14-11-2026-17-30-20 \
-    --comment 'I reviewed the evidence, claims, and applicable criteria.'
+python main.py --project projects/aspice --run-full \
+  --llm openai --model gpt-mini --batch-chars 12000 --batch-limit 0
 ```
 
-**For a partial source selection** (such as your 40/438 example), acceptance requires an explicit limitation acknowledgement. The release remains labeled `partial_exploratory`, never as complete/ASPICE-compliant:
+Copy the returned `run_id` in the next commands.
+
+4. Preview the **exact next 8 requests**. This saves a local window manifest and individual complete request previews:
 
 ```bash
-python main.py --project projects/aspice --approve-draft \
-    --draft-id draft-14-11-2026-17-30-20 \
-    --allow-partial \
-    --comment 'Exploratory draft only: 398 chunks not covered; not a compliance conclusion.'
+python main.py --project projects/aspice --preview-full-api \
+  --llm openai --model gpt-mini \
+  --resume-draft YOUR_RUN_ID --batch-chars 12000 --batch-limit 8
 ```
 
-To reject:
+5. **Inspect every listed request preview** (endpoint, model, exact document excerpts). If acceptable and company-authorized, approve the window digest from the preview result:
 
 ```bash
-python main.py --project projects/aspice --reject-draft \
-    --draft-id draft-14-11-2026-17-30-20 \
-    --comment 'The source interpretation needs revision.'
+python main.py --project projects/aspice --approve-full-api WINDOW_SHA256 \
+  --llm openai --model gpt-mini \
+  --resume-draft YOUR_RUN_ID --batch-chars 12000 --batch-limit 8
 ```
 
-After approval:
+6. Execute **only these eight authorized requests**:
 
 ```bash
-python main.py --project projects/aspice --publish-draft \
-    --draft-id draft-14-11-2026-17-30-20
+python main.py --project projects/aspice --run-full \
+  --llm openai --model gpt-mini \
+  --resume-draft YOUR_RUN_ID --batch-chars 12000 --batch-limit 8
 ```
 
-Publication creates a **new local copy** under `outputs/approved/` and does not overwrite a previously published release. Changes to source documents, `context.md`, the plan, or any generated file invalidate the release gate. Review/approval is intentionally separate from the Stage 1 plan approval.
+Repeat preview, approval, run until completed. The window digest binds the exact model, payload contents, document snapshot, and batch numbers. Every API request has **single-use authorization**. If a network attempt fails, that request must be reapproved before retrying; completed earlier batches are reused. Approving a window authorizes up to the displayed number of paid requests; check your API budget before approving. No automatic remote fallback or retries occur.
 
-## Optional OpenAI API — disabled unless explicitly approved
+Existing aliases: `gpt-mini` → `gpt-5.4-mini`, `gpt-pro` → `gpt-5.5-pro`. Pro is considerably more expensive; model availability depends on the account. The displayed input-token estimate excludes instruction tokens, output, reasoning, and provider-specific pricing. **The program does not enforce a dollar-denominated spending cap.**
 
-The application defaults to local Ollama for inference. It never automatically switches to OpenAI after a local model error.
+### Outputs and quality checks
 
-Friendly model aliases:
+Only after **all planned batches complete** does Stage 5 create `manifest.json`, `draft.md`, `analysis.md`, `model_observations.md`, `model_findings.json`, `evidence.json`, `source_coverage.json`, and other report files in the same run folder. Intermediate `.batches/*.json` and `progress.json` remain available for audit.
 
-| Alias | OpenAI API model ID | Use |
-| --- | --- | --- |
-| `gpt-mini` | `gpt-5.4-mini` | Lower-cost, focused drafting |
-| `gpt-pro` | `gpt-5.5-pro` | Expensive, demanding analysis |
+`source_coverage.json` includes per-document chunk counts, number of source characters, source segment counts, and per-batch model evidence IDs. `evidence.json` preserves original text segments, locators and source hashes. This allows checking that the model prompt received **all indexed source text over multiple calls** instead of an arbitrarily selected sample. It does *not* establish that the model understood, synthesized or accurately compared it all. The final draft is a compilation of local batch-level findings, **not** a validated, comprehensive cross-document process design.
 
-Model accessibility depends on your API account. Check the OpenAI model catalog and billing before choosing Pro.
-
-### A. Store credentials locally
-
-Create a `.env` in the **repository root** using a local text editor:
+Once the status becomes `draft_for_review`:
 
 ```bash
-nano .env
+python main.py --project projects/aspice --review-draft --draft-id YOUR_RUN_ID
 ```
 
-Put exactly one line in the file:
+The Stage 4 approval and publication flow is unchanged (`--approve-draft`, then `--publish-draft`). Human review must verify factual claims, normative applicability, contradictions, process interfaces and whether the desired deliverables have actually been produced. Source coverage and semantic correctness are separate dimensions.
 
-```dotenv
-OPENAI_API_KEY=YOUR_KEY_HERE
-```
+## Security and limitations
 
-Then restrict access and load it into the shell when needed:
+- All source documents, indexes, prompts for API approval, batch results and final artifacts live locally. LLM requests are sent only to Ollama loopback or explicitly approved OpenAI payloads.
+- The existing extraction quality and format coverage limitations remain; unsupported files are listed. Source hash checks prevent stale indexes and modified documents from being analyzed silently.
+- A `context.md` plan alone cannot guarantee the correctness of normative interpretation. Source data are treated as untrusted content, not instructions.
+- A very large collection may produce hundreds/thousands of batch requests; use `--full-plan` before committing resources.
+- Batch outputs and syntactically valid citations **are not** requirement coverage or a regulatory assessment. A future phase should implement reference-to-input evidence matching and semantic verification before making compliance conclusions.
+- LangGraph has not yet been wired into the runnable application; Stage 5 uses a resumable deterministic state machine compatible with future LangGraph migration.
 
-```bash
-chmod 600 .env
-set -a
-source .env
-set +a
-```
-
-`.env` is ignored by Git. **Do not commit or paste the API key into `context.md`, prompts, terminal commands, screenshots, or chat.** The program reads `OPENAI_API_KEY` from the environment only when sending an already approved remote request. The API key is never saved in request previews or result manifests.
-
-### B. Preview the exact payload (no network call)
-
-```bash
-python main.py --project projects/aspice --llm openai --model gpt-mini --preview-api
-```
-
-This creates a local, Git-ignored `.local/external_requests/<SHA256>.preview.json` file with the **complete exact prompt, excerpts, model, and destination URL**; file mode is `0600`. Read it carefully before approving and confirm your organization permits transmitting those excerpts to OpenAI.
-
-### C. Approve this exact model and payload (still no network call)
-
-```bash
-python main.py --project projects/aspice --llm openai --model gpt-mini \
-    --approve-api <REQUEST_SHA256_FROM_PREVIEW>
-```
-
-A change to any prompt text, evidence, context, or model invalidates this approval. **Each approval authorizes one network attempt.** If an attempt fails, explicitly approve the same preview again before retrying.
-
-### D. Execute the authorized API request
-
-```bash
-python main.py --project projects/aspice --llm openai --model gpt-mini --run
-```
-
-This sends a small, selected sample of source excerpts (not the full local documents) to `https://api.openai.com/v1/responses` over HTTPS. The request sets `store:false`, uses a structured response, and has **no hosted file upload, search tool, or hosted vector store**. The resulting files are saved locally.
-
-**Privacy:** the API call still transfers selected content to OpenAI. `store:false` does not mean zero provider-side retention or no abuse monitoring logs; see the [OpenAI API data controls documentation](https://developers.openai.com/api/docs/guides/your-data). Do not use external inference with unauthorized confidential materials.
-
-**Cost:** all OpenAI API usage can incur charges; Pro is especially expensive. The engine does not make any automatic API retry or fallback calls.
-
-## Verification
+## Test suite
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-The project uses the same `main.py` and existing `engine/` modules. The Stage 4 update has been tested using local deterministic workflows and mocked OpenAI responses. **Live Ollama and authenticated OpenAI API calls require testing on your computer.**
+The tests cover the preexisting Stages 1–4 and Stage 5 source traversal, reference priority, lossless splitting, resume behavior, invalid results, local/no-LLM modes, full API preview/approval and source changes. Live Ollama and authenticated OpenAI full-run execution require testing on your machine.
